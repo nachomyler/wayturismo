@@ -1,0 +1,12 @@
+services:
+  wayturismo:
+    build: .
+    container_name: wayturismo
+    ports:
+      - "4010:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - JWT_SECRET=change-this-in-production
+    volumes:
+      - ./server/data:/app/server/data
