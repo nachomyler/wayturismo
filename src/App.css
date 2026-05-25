@@ -1045,6 +1045,8 @@ button:disabled {
   padding: 12px 14px;
   background: var(--wt-warm-soft);
   border-bottom: 2px solid #fde68a;
+  position: relative;
+  z-index: 500;
 }
 
 .map-planner-toggle {
@@ -1513,6 +1515,132 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.sidebar-admin .admin-form-wrap {
+  display: grid;
+  gap: 10px;
+}
+
+.sidebar-admin-pick-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.admin-map-hint {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #1e40af;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.admin-picked-location {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #0f766e;
+  background: #f0fdfa;
+  border: 1px solid #99f6e4;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+.admin-picked-location--empty {
+  color: #b45309;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.admin-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+
+.admin-error {
+  margin: 0;
+}
+
+.admin-list-more {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.btn-danger-text {
+  color: #b91c1c;
+}
+
+.map-admin-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 2px solid #c2410c;
+  background: #fff7ed;
+  color: #9a3412;
+  font-weight: 700;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.map-admin-toggle--on {
+  background: #ea580c;
+  color: #fff;
+  border-color: #c2410c;
+  box-shadow: 0 0 0 3px rgba(234, 88, 12, 0.25);
+}
+
+.map-admin-banner {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  color: #9a3412;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.map-cursor--admin-pick,
+.map-container--admin-pick {
+  cursor: crosshair !important;
+}
+
+.admin-draft-marker {
+  background: transparent;
+  border: none;
+}
+
+.admin-draft-marker-pin {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: linear-gradient(145deg, #ea580c, #c2410c);
+  color: #fff;
+  font-size: 1.4rem;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 4px 14px rgba(194, 65, 12, 0.45);
+  border: 2px solid #fff;
+}
+
+.admin-draft-marker-inner {
+  display: block;
+  transform: rotate(45deg);
+}
+
+.admin-popup-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #64748b;
 }
 
 .admin-list {

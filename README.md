@@ -57,16 +57,18 @@ npm install
 npm run setup
 ```
 
-Crea `.env` desde `.env.example` y la carpeta `server/data`.
+Crea `.env` desde `.env.example` y las carpetas de datos en `services/data/`.
 
-3. Levantar cliente y servidor:
+3. Levantar microservicios y cliente:
 
 ```bash
 npm run dev
 ```
 
 - Frontend: `http://localhost:5173`
-- API: `http://localhost:4000`
+- API (gateway): `http://localhost:4000` — reenvía a auth (4001), places (4002), geo (4003), trips (4004)
+
+Monolito anterior (solo pruebas): `npm run dev:monolith`
 
 ## Ejecutar en produccion local
 
@@ -76,13 +78,13 @@ npm run dev
 npm run build
 ```
 
-2. Iniciar servidor Express en modo produccion:
+2. Iniciar gateway (y en otro terminal los 4 servicios, o usar Docker):
 
 ```bash
 npm run start
 ```
 
-La app y la API quedaran en `http://localhost:4000`.
+En produccion local conviene `docker compose up` (levanta los 5 contenedores). La app queda en `http://localhost:4000` si solo corres el gateway con `dist/` ya compilado.
 
 ## Docker
 
@@ -92,8 +94,8 @@ Construir y ejecutar con Docker Compose:
 docker compose up --build
 ```
 
-La aplicacion quedara en `http://localhost:4000`.
-La base SQLite se persiste en `server/data`.
+La aplicacion quedara en `http://localhost:4010` (mapeo del gateway en compose).
+Las bases SQLite se persisten en `services/data/` (auth, places, trips).
 Si aparece un error de `dockerDesktopLinuxEngine`, abrir Docker Desktop y esperar a que quede en estado running.
 Si el puerto `4000` esta ocupado, usar el mapeo actual de compose en `http://localhost:4010`.
 
@@ -123,8 +125,10 @@ El workflow en `.github/workflows/ci.yml` valida en cada push/PR:
 
 ## Variables de entorno
 
-- `PORT`: puerto de Express (default `4000`)
-- `JWT_SECRET`: secreto para firmar tokens JWT (obligatorio en produccion)
+- `PORT` / `GATEWAY_PORT`: puerto del gateway (default `4000`)
+- `AUTH_SERVICE_PORT`, `PLACES_SERVICE_PORT`, `GEO_SERVICE_PORT`, `TRIPS_SERVICE_PORT`: puertos en desarrollo
+- `AUTH_SERVICE_URL`, `PLACES_SERVICE_URL`, `GEO_SERVICE_URL`, `TRIPS_SERVICE_URL`: URLs internas (Docker)
+- `JWT_SECRET`: secreto compartido para JWT (obligatorio en produccion; auth y trips lo usan)
 - `VITE_API_URL`: URL base de API para frontend en desarrollo (opcional; por defecto `/api`)
 
 ## Credenciales admin por defecto

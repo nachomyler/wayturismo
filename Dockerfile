@@ -18,6 +18,7 @@ RUN npm ci --omit=dev
 
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server ./server
+COPY --from=build /app/services ./services
 
 EXPOSE 4000
-CMD ["npm", "run", "start"]
+CMD ["node", "services/gateway/index.js"]

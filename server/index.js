@@ -1,3 +1,8 @@
+/**
+ * API monolito (legacy). Desarrollo y produccion usan microservicios:
+ * npm run dev  -> gateway + auth + places + geo + trips
+ * npm run start:monolith  -> solo este archivo
+ */
 import 'dotenv/config'
 import process from 'node:process'
 import path from 'node:path'

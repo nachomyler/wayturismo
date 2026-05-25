@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { GeoJSON, MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from 'react-leaflet'
+import { GeoJSON, MapContainer, Marker, Polyline, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet.markercluster'
 import 'leaflet.markercluster/dist/MarkerCluster.css'
@@ -690,6 +690,8 @@ function PlaceMarker({
   isInRoute,
   routeOrder,
   routePlannerActive,
+  adminPlacePickModeRef,
+  onAdminMapPickRef,
   onToggleFavorite,
   onToggleRoute,
 }) {
@@ -705,7 +707,12 @@ function PlaceMarker({
       position={[place.lat, place.lng]}
       icon={icon}
       eventHandlers={{
-        click: () => {
+        click: (e) => {
+          if (adminPlacePickModeRef?.current) {
+            L.DomEvent.stopPropagation(e)
+            onAdminMapPickRef.current(e.latlng.lat, e.latlng.lng)
+            return
+          }
           if (routePlannerActive) onToggleRoute(place)
         },
       }}
@@ -744,6 +751,47 @@ function buildEventMarkerIcon() {
   })
   markerIconCache.set(cacheKey, icon)
   return icon
+}
+
+const EMPTY_ADMIN_FORM = {
+  name: '',
+  description: '',
+  image: '',
+  category: 'bodegas',
+  phone: '',
+  province: 'Mendoza',
+  department: 'Lujan de Cuyo',
+  areaKey: 'lujan',
+  lat: '',
+  lng: '',
+}
+
+function AdminMapClickHandler({ enabledRef, onPickRef, pickMode }) {
+  const map = useMap()
+  useEffect(() => {
+    const el = map.getContainer()
+    if (enabledRef.current) el.classList.add('map-cursor--admin-pick')
+    else el.classList.remove('map-cursor--admin-pick')
+    return () => el.classList.remove('map-cursor--admin-pick')
+  }, [enabledRef, map, pickMode])
+  useMapEvents({
+    click(e) {
+      if (!enabledRef.current) return
+      L.DomEvent.stopPropagation(e)
+      onPickRef.current(e.latlng.lat, e.latlng.lng)
+    },
+  })
+  return null
+}
+
+function buildAdminDraftIcon() {
+  return L.divIcon({
+    className: 'admin-draft-marker',
+    html: '<span class="admin-draft-marker-pin" aria-hidden="true"><span class="admin-draft-marker-inner">+</span></span>',
+    iconSize: [36, 36],
+    iconAnchor: [18, 36],
+    popupAnchor: [0, -32],
+  })
 }
 
 function buildMarkerIcon(category, highlight = false, routeOrder = null) {
@@ -840,19 +888,12 @@ function App() {
   const [eventStreet1Picked, setEventStreet1Picked] = useState(false)
   const [highlightedEventId, setHighlightedEventId] = useState(null)
   const [focusingEventId, setFocusingEventId] = useState(null)
-  const [adminForm, setAdminForm] = useState({
-    name: '',
-    description: '',
-    image: '',
-    category: 'bodegas',
-    phone: '',
-    province: 'Mendoza',
-    department: 'Lujan de Cuyo',
-    areaKey: 'lujan',
-    lat: '',
-    lng: '',
-  })
+  const [adminForm, setAdminForm] = useState({ ...EMPTY_ADMIN_FORM })
   const [editingId, setEditingId] = useState(0)
+  const [adminPlacePickMode, setAdminPlacePickMode] = useState(false)
+  const [adminError, setAdminError] = useState('')
+  const adminPlacePickModeRef = useRef(false)
+  const handleAdminMapPickRef = useRef(() => {})
 
   const selectedProvinceData = useMemo(
     () => provinceOptions.find((province) => province.name === selectedProvince) ?? null,
@@ -1476,6 +1517,7 @@ function App() {
       localStorage.setItem('wt_token', data.token)
       localStorage.setItem('wt_user', JSON.stringify(data.user))
       setAuthError('')
+      if (data.user.role === 'admin') setAdminPlacePickMode(true)
     } catch {
       setAuthError('No se pudo conectar con el servidor. Verifica que npm run dev este activo.')
     }
@@ -1499,6 +1541,7 @@ function App() {
       localStorage.setItem('wt_token', data.token)
       localStorage.setItem('wt_user', JSON.stringify(data.user))
       setAuthError('')
+      if (data.user.role === 'admin') setAdminPlacePickMode(true)
     } catch {
       setAuthError('No se pudo conectar con el servidor. Verifica que npm run dev este activo.')
     }
@@ -1755,39 +1798,92 @@ function App() {
     }
   }
 
-  const onAdminSubmit = async (event) => {
-    event.preventDefault()
-    const payload = {
-      ...adminForm,
-      lat: Number(adminForm.lat),
-      lng: Number(adminForm.lng),
-    }
-    if (!payload.name || Number.isNaN(payload.lat) || Number.isNaN(payload.lng) || !payload.areaKey) return
-    const endpoint = editingId ? `${API_URL}/admin/places/${editingId}` : `${API_URL}/admin/places`
-    const method = editingId ? 'PUT' : 'POST'
-    const response = await fetch(endpoint, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    })
-    const data = await response.json()
-    setPlaces(data)
+  const handleAdminMapPick = useCallback((lat, lng) => {
+    const province = selectedProvince || 'Mendoza'
+    const department = selectedDepartment || ''
+    const areaKey = selectedAreaKey !== 'argentina' ? selectedAreaKey : 'lujan'
+    setAdminForm((prev) => ({
+      ...prev,
+      lat: String(lat),
+      lng: String(lng),
+      province,
+      department: department || prev.department,
+      areaKey: areaKey || prev.areaKey,
+    }))
+    setAdminError('')
+    setMapFocus({ lat, lng, zoom: mapLevel === 'country' ? 8 : mapLevel === 'province' ? 10 : 13, tick: Date.now() })
+  }, [mapLevel, selectedAreaKey, selectedDepartment, selectedProvince])
+
+  useEffect(() => {
+    adminPlacePickModeRef.current = adminPlacePickMode
+  }, [adminPlacePickMode])
+
+  useEffect(() => {
+    handleAdminMapPickRef.current = handleAdminMapPick
+  }, [handleAdminMapPick])
+
+  const pickFromMapLayerClick = useCallback((e) => {
+    if (!adminPlacePickModeRef.current) return false
+    L.DomEvent.stopPropagation(e)
+    handleAdminMapPickRef.current(e.latlng.lat, e.latlng.lng)
+    return true
+  }, [])
+
+  const resetAdminForm = useCallback(() => {
     setEditingId(0)
     setAdminForm({
-      name: '',
-      description: '',
-      image: '',
-      category: 'bodegas',
-      phone: '',
-      province: 'Mendoza',
-      department: 'Lujan de Cuyo',
-      areaKey: 'lujan',
-      lat: '',
-      lng: '',
+      ...EMPTY_ADMIN_FORM,
+      province: selectedProvince || EMPTY_ADMIN_FORM.province,
+      department: selectedDepartment || EMPTY_ADMIN_FORM.department,
+      areaKey: selectedAreaKey !== 'argentina' ? selectedAreaKey : EMPTY_ADMIN_FORM.areaKey,
     })
+    setAdminError('')
+  }, [selectedAreaKey, selectedDepartment, selectedProvince])
+
+  const onAdminSubmit = async (event) => {
+    event.preventDefault()
+    setAdminError('')
+    const lat = Number(adminForm.lat)
+    const lng = Number(adminForm.lng)
+    if (!adminForm.name.trim()) {
+      setAdminError('Escribí el nombre del lugar.')
+      return
+    }
+    if (!adminForm.lat || !adminForm.lng || Number.isNaN(lat) || Number.isNaN(lng)) {
+      setAdminError('Hacé clic en el mapa para marcar dónde va el lugar.')
+      return
+    }
+    if (!adminForm.areaKey) {
+      setAdminError('Elegí una zona (provincia/departamento) en el mapa o en el formulario.')
+      return
+    }
+    const payload = {
+      ...adminForm,
+      name: adminForm.name.trim(),
+      lat,
+      lng,
+    }
+    const endpoint = editingId ? `${API_URL}/admin/places/${editingId}` : `${API_URL}/admin/places`
+    const method = editingId ? 'PUT' : 'POST'
+    try {
+      const response = await fetch(endpoint, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        setAdminError(data.error ?? 'No se pudo guardar el lugar')
+        return
+      }
+      setPlaces(data)
+      resetAdminForm()
+    } catch {
+      setAdminError('No se pudo conectar con el servidor.')
+    }
   }
 
   return (
@@ -1880,6 +1976,7 @@ function App() {
                   localStorage.removeItem('wt_user')
                   setToken('')
                   setCurrentUser(null)
+                  setAdminPlacePickMode(false)
                 }}
               >
                 Salir
@@ -2046,6 +2143,104 @@ function App() {
             </label>
               </div>
             </section>
+
+            {currentUser?.role === 'admin' ? (
+              <details className="sidebar-section sidebar-collapsible sidebar-admin" open>
+                <summary><span className="section-icon" aria-hidden>🛠️</span> Gestion de lugares (admin)</summary>
+                <div className="admin-form-wrap">
+                  <button
+                    type="button"
+                    className={`btn-block map-admin-toggle sidebar-admin-pick-btn${adminPlacePickMode ? ' map-admin-toggle--on' : ''}`}
+                    onClick={() => {
+                      setAdminPlacePickMode((on) => {
+                        const next = !on
+                        if (next) setRoutePlannerActive(false)
+                        return next
+                      })
+                    }}
+                    aria-pressed={adminPlacePickMode}
+                  >
+                    {adminPlacePickMode ? '✓ Modo mapa activo — clic para ubicar' : 'Activar: marcar lugar en el mapa'}
+                  </button>
+                  <p className="admin-map-hint">
+                    {adminPlacePickMode
+                      ? 'Hacé clic en el mapa (o en una provincia/departamento). Aparece el pin naranja.'
+                      : 'Pulsá el botón de arriba o el del mapa para empezar a marcar.'}
+                  </p>
+                  {adminForm.lat && adminForm.lng ? (
+                    <p className="admin-picked-location">
+                      <strong>Ubicacion marcada:</strong> {Number(adminForm.lat).toFixed(5)}, {Number(adminForm.lng).toFixed(5)}
+                      {adminForm.province ? ` · ${adminForm.province}${adminForm.department ? ` / ${adminForm.department}` : ''}` : ''}
+                    </p>
+                  ) : (
+                    <p className="admin-picked-location admin-picked-location--empty">Todavia no marcaste un punto en el mapa.</p>
+                  )}
+                  <form onSubmit={onAdminSubmit} className="form-grid admin-form">
+                    <input placeholder="Nombre" value={adminForm.name} onChange={(e) => setAdminForm((p) => ({ ...p, name: e.target.value }))} required />
+                    <input placeholder="Descripcion" value={adminForm.description} onChange={(e) => setAdminForm((p) => ({ ...p, description: e.target.value }))} />
+                    <input placeholder="URL imagen" value={adminForm.image} onChange={(e) => setAdminForm((p) => ({ ...p, image: e.target.value }))} />
+                    <select value={adminForm.category} onChange={(e) => setAdminForm((p) => ({ ...p, category: e.target.value }))}>
+                      <option value="bodegas">bodegas</option>
+                      <option value="olivicolas">olivicolas</option>
+                      <option value="religioso">religioso</option>
+                      <option value="hospitales">hospitales</option>
+                      <option value="hoteles">hoteles</option>
+                    </select>
+                    <input placeholder="Telefono" value={adminForm.phone} onChange={(e) => setAdminForm((p) => ({ ...p, phone: e.target.value }))} />
+                    <input placeholder="Provincia" value={adminForm.province} onChange={(e) => setAdminForm((p) => ({ ...p, province: e.target.value }))} />
+                    <input placeholder="Departamento" value={adminForm.department} onChange={(e) => setAdminForm((p) => ({ ...p, department: e.target.value }))} />
+                    <select value={adminForm.areaKey} onChange={(e) => setAdminForm((p) => ({ ...p, areaKey: e.target.value }))}>
+                      {areas.filter((x) => x.level !== 'country').map((x) => <option key={x.id} value={x.key}>{x.name}</option>)}
+                    </select>
+                    <div className="admin-form-actions">
+                      <button type="submit" className="btn-primary">{editingId ? 'Guardar cambios' : 'Guardar lugar'}</button>
+                      {editingId ? (
+                        <button type="button" className="btn-ghost" onClick={resetAdminForm}>Cancelar edicion</button>
+                      ) : null}
+                    </div>
+                  </form>
+                  {adminError ? <p className="error admin-error">{adminError}</p> : null}
+                  <div className="admin-list">
+                    <h4>Lugares en el sistema ({places.length})</h4>
+                    {places.slice(0, 40).map((p) => (
+                      <div key={p.id} className="admin-row">
+                        <span>{p.name}</span>
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingId(p.id)
+                              setAdminForm({ ...p, lat: String(p.lat), lng: String(p.lng) })
+                              setAdminPlacePickMode(true)
+                              setMapFocus({ lat: p.lat, lng: p.lng, zoom: 13, tick: Date.now() })
+                              setAdminError('')
+                            }}
+                          >
+                            Editar
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-danger-text"
+                            onClick={async () => {
+                              const response = await fetch(`${API_URL}/admin/places/${p.id}`, {
+                                method: 'DELETE',
+                                headers: { Authorization: `Bearer ${token}` },
+                              })
+                              const data = await response.json()
+                              setPlaces(data)
+                              if (editingId === p.id) resetAdminForm()
+                            }}
+                          >
+                            Eliminar
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {places.length > 40 ? <p className="admin-list-more">… y {places.length - 40} mas (usa busqueda en el mapa)</p> : null}
+                  </div>
+                </div>
+              </details>
+            ) : null}
 
             {provinceQuickGroupsVisible.length > 0 ? (
               <details className="sidebar-section sidebar-collapsible" open>
@@ -2397,10 +2592,33 @@ function App() {
               ) : null}
             </div>
             <div className="map-route-toolbar">
+              {currentUser?.role === 'admin' ? (
+                <button
+                  type="button"
+                  className={`map-admin-toggle${adminPlacePickMode ? ' map-admin-toggle--on' : ''}`}
+                  onClick={() => {
+                    setAdminPlacePickMode((on) => {
+                      const next = !on
+                      if (next) setRoutePlannerActive(false)
+                      return next
+                    })
+                  }}
+                  aria-pressed={adminPlacePickMode}
+                >
+                  <span className="map-planner-toggle-icon" aria-hidden>📍</span>
+                  {adminPlacePickMode ? '✓ Marcar en mapa (activo)' : 'Marcar lugar en el mapa'}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className={`map-planner-toggle${routePlannerActive ? ' map-planner-toggle--on' : ''}`}
-                onClick={() => setRoutePlannerActive((on) => !on)}
+                onClick={() => {
+                  setRoutePlannerActive((on) => {
+                    const next = !on
+                    if (next) setAdminPlacePickMode(false)
+                    return next
+                  })
+                }}
                 aria-pressed={routePlannerActive}
               >
                 <span className="map-planner-toggle-icon" aria-hidden>🧭</span>
@@ -2410,7 +2628,13 @@ function App() {
                 <span className="map-planner-badge">{routeStops.length} parada{routeStops.length === 1 ? '' : 's'}</span>
               ) : null}
             </div>
+            {adminPlacePickMode ? (
+              <p className="map-admin-banner" role="status">
+                Modo admin: hacé clic en el mapa para {editingId ? 'mover' : 'colocar'} el lugar. Completá el formulario en la barra lateral y pulsá Guardar.
+              </p>
+            ) : null}
             <MapContainer
+              className={adminPlacePickMode ? 'map-container--admin-pick' : undefined}
               center={DEFAULT_CENTER}
               zoom={DEFAULT_ZOOM}
               scrollWheelZoom
@@ -2421,6 +2645,9 @@ function App() {
               style={{ height: '600px', width: '100%' }}
             >
               <MapZoomLimits minZoom={4} maxZoom={mapMaxZoom} />
+              {currentUser?.role === 'admin' ? (
+                <AdminMapClickHandler enabledRef={adminPlacePickModeRef} onPickRef={handleAdminMapPickRef} pickMode={adminPlacePickMode} />
+              ) : null}
               <TileLayer attribution={mapTile.attribution} url={mapTile.url} />
               {mapFocus ? (
                 <FlyToPoint point={mapFocus} />
@@ -2440,7 +2667,8 @@ function App() {
                   onEachFeature={(feature, layer) => {
                     const name = feature.properties?.nombre ?? ''
                     layer.on({
-                      click: () => {
+                      click: (e) => {
+                        if (pickFromMapLayerClick(e)) return
                         releaseMapFocusForNavigation()
                         setSelectedProvince(name)
                         setSelectedDepartment('')
@@ -2479,7 +2707,8 @@ function App() {
                       layer.bindTooltip(name, { sticky: true, direction: 'top' })
                     }
                     layer.on({
-                      click: () => {
+                      click: (e) => {
+                        if (pickFromMapLayerClick(e)) return
                         releaseMapFocusForNavigation()
                         setSelectedDepartment(name)
                         setMapLevel('department')
@@ -2496,6 +2725,18 @@ function App() {
               ) : null}
               {mapLevel === 'department' && streetsGeoData?.features?.length ? (
                 <DepartmentStreetsLayer key={`layer-calles-${selectedProvince}-${selectedDepartment}`} data={streetsGeoData} />
+              ) : null}
+              {currentUser?.role === 'admin' && adminPlacePickMode && adminForm.lat && adminForm.lng && !Number.isNaN(Number(adminForm.lat)) && !Number.isNaN(Number(adminForm.lng)) ? (
+                <Marker
+                  position={[Number(adminForm.lat), Number(adminForm.lng)]}
+                  icon={buildAdminDraftIcon()}
+                >
+                  <Popup>
+                    <p><strong>{adminForm.name || 'Nuevo lugar'}</strong></p>
+                    <p>{adminForm.province}{adminForm.department ? ` / ${adminForm.department}` : ''}</p>
+                    <p className="admin-popup-hint">Ajustá la posicion con otro clic en el mapa.</p>
+                  </Popup>
+                </Marker>
               ) : null}
               {geocodePin ? (
                 <Marker position={[geocodePin.lat, geocodePin.lng]}>
@@ -2534,6 +2775,8 @@ function App() {
                   isInRoute={order != null}
                   routeOrder={order}
                   routePlannerActive={routePlannerActive}
+                  adminPlacePickModeRef={currentUser?.role === 'admin' ? adminPlacePickModeRef : null}
+                  onAdminMapPickRef={handleAdminMapPickRef}
                   onToggleFavorite={toggleFavorite}
                   onToggleRoute={toggleRoutePlace}
                 />
@@ -2543,50 +2786,6 @@ function App() {
         </section>
       )}
 
-      {currentUser?.role === 'admin' && (
-        <section className="panel admin-panel">
-          <h2>Gestion de lugares (admin)</h2>
-          <form onSubmit={onAdminSubmit} className="form-grid">
-            <input placeholder="Nombre" value={adminForm.name} onChange={(e) => setAdminForm((p) => ({ ...p, name: e.target.value }))} />
-            <input placeholder="Descripcion" value={adminForm.description} onChange={(e) => setAdminForm((p) => ({ ...p, description: e.target.value }))} />
-            <input placeholder="URL imagen" value={adminForm.image} onChange={(e) => setAdminForm((p) => ({ ...p, image: e.target.value }))} />
-            <select value={adminForm.category} onChange={(e) => setAdminForm((p) => ({ ...p, category: e.target.value }))}>
-              <option value="bodegas">bodegas</option>
-              <option value="olivicolas">olivicolas</option>
-              <option value="religioso">religioso</option>
-              <option value="hospitales">hospitales</option>
-              <option value="hoteles">hoteles</option>
-            </select>
-            <input placeholder="Telefono" value={adminForm.phone} onChange={(e) => setAdminForm((p) => ({ ...p, phone: e.target.value }))} />
-            <input placeholder="Provincia" value={adminForm.province} onChange={(e) => setAdminForm((p) => ({ ...p, province: e.target.value }))} />
-            <input placeholder="Departamento" value={adminForm.department} onChange={(e) => setAdminForm((p) => ({ ...p, department: e.target.value }))} />
-            <select value={adminForm.areaKey} onChange={(e) => setAdminForm((p) => ({ ...p, areaKey: e.target.value }))}>
-              {areas.filter((x) => x.level !== 'country').map((x) => <option key={x.id} value={x.key}>{x.name}</option>)}
-            </select>
-            <input placeholder="Latitud" value={adminForm.lat} onChange={(e) => setAdminForm((p) => ({ ...p, lat: e.target.value }))} />
-            <input placeholder="Longitud" value={adminForm.lng} onChange={(e) => setAdminForm((p) => ({ ...p, lng: e.target.value }))} />
-            <button type="submit">{editingId ? 'Actualizar lugar' : 'Agregar lugar'}</button>
-          </form>
-          <div className="admin-list">
-            {places.map((p) => (
-              <div key={p.id} className="admin-row">
-                <span>{p.name} ({p.province}/{p.department})</span>
-                <div>
-                  <button onClick={() => { setEditingId(p.id); setAdminForm({ ...p, lat: String(p.lat), lng: String(p.lng) }) }}>Editar</button>
-                  <button onClick={async () => {
-                    const response = await fetch(`${API_URL}/admin/places/${p.id}`, {
-                      method: 'DELETE',
-                      headers: { Authorization: `Bearer ${token}` },
-                    })
-                    const data = await response.json()
-                    setPlaces(data)
-                  }}>Eliminar</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
     </main>
   )
 }

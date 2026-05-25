@@ -14,6 +14,8 @@ dist-ssr
 .env
 server/data/*.sqlite
 server/data/*.sqlite-*
+services/data/**/*.sqlite
+services/data/**/*.sqlite-*
 
 # Herramientas y carpetas locales (no subir)
 .cursor/

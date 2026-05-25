@@ -1,12 +1,52 @@
 services:
-  wayturismo:
+  auth:
+    build: .
+    command: node services/auth-service/index.js
+    environment:
+      - JWT_SECRET=${JWT_SECRET:-change-this-in-production}
+      - AUTH_SERVICE_PORT=4001
+    volumes:
+      - ./services/data/auth:/app/services/data/auth
+
+  places:
+    build: .
+    command: node services/places-service/index.js
+    environment:
+      - PLACES_SERVICE_PORT=4002
+    volumes:
+      - ./services/data/places:/app/services/data/places
+
+  geo:
+    build: .
+    command: node services/geo-service/index.js
+    environment:
+      - GEO_SERVICE_PORT=4003
+
+  trips:
+    build: .
+    command: node services/trips-service/index.js
+    environment:
+      - JWT_SECRET=${JWT_SECRET:-change-this-in-production}
+      - TRIPS_SERVICE_PORT=4004
+    volumes:
+      - ./services/data/trips:/app/services/data/trips
+
+  gateway:
     build: .
     container_name: wayturismo
+    command: node services/gateway/index.js
     ports:
       - "4010:4000"
+    depends_on:
+      - auth
+      - places
+      - geo
+      - trips
     environment:
       - NODE_ENV=production
       - PORT=4000
-      - JWT_SECRET=change-this-in-production
-    volumes:
-      - ./server/data:/app/server/data
+      - JWT_SECRET=${JWT_SECRET:-change-this-in-production}
+      - AUTH_SERVICE_URL=http://auth:4001
+      - PLACES_SERVICE_URL=http://places:4002
+      - GEO_SERVICE_URL=http://geo:4003
+      - TRIPS_SERVICE_URL=http://trips:4004
