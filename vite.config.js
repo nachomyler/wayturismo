@@ -10,6 +10,11 @@ export default defineConfig({
         target: 'http://localhost:4000',
         changeOrigin: true,
       },
+      '/georef-api': {
+        target: 'https://apis.datos.gob.ar',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/georef-api/, ''),
+      },
     },
   },
 })

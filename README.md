@@ -9,7 +9,41 @@ Aplicacion web de turismo para Argentina con mapa interactivo, autenticacion seg
 - Base de datos: SQLite
 - Auth: JWT + bcryptjs
 
-## Ejecutar en local
+## Visual Studio Code (recomendado)
+
+1. Abrir la carpeta del proyecto en VS Code, o el archivo `wayturismo.code-workspace`.
+2. Instalar las extensiones recomendadas cuando VS Code lo pida (ESLint, JavaScript Debugger, etc.).
+3. Abrir la terminal integrada (Ctrl+`) y ejecutar:
+
+```bash
+npm install
+```
+
+El script `postinstall` crea `.env` y la carpeta `server/data` automaticamente.
+
+4. **Iniciar la app** (elige una opcion):
+   - **F5** → configuracion **"Iniciar app (npm run dev)"** en la barra de depuracion.
+   - **Ctrl+Shift+B** → tarea **"Desarrollo: API + cliente (npm run dev)"**.
+   - Terminal: `npm run dev`.
+
+5. Abrir en el navegador: `http://localhost:5173`
+
+### Atajos utiles en VS Code
+
+| Accion | Como |
+|--------|------|
+| Ejecutar en desarrollo | F5 → *Iniciar app (npm run dev)* |
+| Depurar solo la API | Panel Depurar → *Depurar API (Express)* |
+| Abrir con depuracion en Chrome | *Frontend en Chrome* (levanta dev antes) |
+| Lint | Terminal → `npm run lint` o tarea *Lint (ESLint)* |
+| Build | Tarea *Build produccion* |
+
+### Requisitos
+
+- [Node.js](https://nodejs.org/) 20 o superior
+- npm (incluido con Node)
+
+## Ejecutar en local (terminal)
 
 1. Instalar dependencias:
 
@@ -17,7 +51,13 @@ Aplicacion web de turismo para Argentina con mapa interactivo, autenticacion seg
 npm install
 ```
 
-2. Crear archivo `.env` desde `.env.example` (opcional para desarrollo rapido).
+2. Configuracion inicial (opcional si ya corrio `npm install`):
+
+```bash
+npm run setup
+```
+
+Crea `.env` desde `.env.example` y la carpeta `server/data`.
 
 3. Levantar cliente y servidor:
 

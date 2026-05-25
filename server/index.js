@@ -7,6 +7,11 @@ import cors from 'cors'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { all, get, run } from './db.js'
+import { famousPlaces, quickSearchGroups } from './famousPlaces.js'
+import { mendozaPlaces, mendozaQuickSearchGroups } from './mendozaPlaces.js'
+import { argentinaPlaces, argentinaQuickSearchGroups } from './argentinaPlaces.js'
+import { filterAntarcticaFromGeoJson } from './geoFilter.js'
+import { filterPlacesByDepartment, filterPlacesByProvince } from './geoNormalize.js'
 import { geoAreas, places as seedPlaces } from './seedData.js'
 
 const app = express()
@@ -20,7 +25,7 @@ app.use(cors())
 app.use(express.json())
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true })
+  res.json({ ok: true, features: { calles: true, callesPuntos: true, eventLocation: true } })
 })
 
 function createToken(user) {
@@ -106,7 +111,10 @@ async function ensureSchema() {
     )
   }
 
-  for (const place of seedPlaces) {
+  await run("DELETE FROM places WHERE province = 'Mendoza' AND areaKey LIKE 'famous-%'")
+  const famousOutsideMendoza = famousPlaces.filter((p) => p.province !== 'Mendoza')
+  const allSeedPlaces = [...seedPlaces, ...famousOutsideMendoza, ...mendozaPlaces, ...argentinaPlaces]
+  for (const place of allSeedPlaces) {
     await run(
       'INSERT OR IGNORE INTO places (name, description, image, category, phone, province, department, areaKey, lat, lng) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [place.name, place.description, place.image, place.category, place.phone, place.province, place.department, place.areaKey, place.lat, place.lng],
@@ -179,6 +187,30 @@ app.post('/api/auth/login', async (req, res) => {
   res.json({
     token: createToken(user),
     user: { id: user.id, name: user.name, email: user.email, role: user.role },
+  })
+})
+
+function mergeQuickSearchGroups(...groupLists) {
+  const merged = new Map()
+  for (const groups of groupLists) {
+    for (const group of groups) {
+      const bucket = merged.get(group.category) || { ...group, items: [] }
+      const seen = new Set(bucket.items.map((item) => item.id))
+      for (const item of group.items) {
+        if (seen.has(item.id)) continue
+        seen.add(item.id)
+        bucket.items.push(item)
+      }
+      merged.set(group.category, bucket)
+    }
+  }
+  return [...merged.values()]
+}
+
+app.get('/api/quick-search', (_req, res) => {
+  res.json({
+    national: mergeQuickSearchGroups(quickSearchGroups, argentinaQuickSearchGroups),
+    mendoza: mendozaQuickSearchGroups,
   })
 })
 
@@ -260,7 +292,7 @@ app.get('/api/geo/provincias', async (_req, res) => {
       geoCache.provincias.data = await fetchGeoJsonFollowRedirects('https://apis.datos.gob.ar/georef/api/v2.0/provincias.geojson')
       geoCache.provincias.ts = now
     }
-    res.json(geoCache.provincias.data)
+    res.json(filterAntarcticaFromGeoJson(geoCache.provincias.data))
   } catch {
     res.status(502).json({ error: 'No se pudo cargar geometrias de provincias' })
   }
@@ -333,10 +365,154 @@ app.get('/api/geo/localidades', async (req, res) => {
   }
 })
 
+async function resolveDepartamentoId(provincia, departamento) {
+  const tryFetch = async (exacto) => {
+    const deptUrl = `https://apis.datos.gob.ar/georef/api/departamentos?provincia=${encodeURIComponent(provincia)}&nombre=${encodeURIComponent(departamento)}&exacto=${exacto}&campos=id,nombre`
+    const dr = await fetch(deptUrl)
+    if (!dr.ok) return null
+    const dd = await dr.json()
+    return dd.departamentos?.[0]?.id ?? null
+  }
+  const exactId = await tryFetch(true)
+  if (exactId) return exactId
+  return tryFetch(false)
+}
+
+async function fetchCallesByDepartamentoId(deptId) {
+  const names = new Set()
+  const pageSize = 5000
+  let inicio = 0
+  let total = Number.POSITIVE_INFINITY
+
+  while (inicio < total) {
+    const callesUrl = new URL('https://apis.datos.gob.ar/georef/api/calles')
+    callesUrl.searchParams.set('departamento', String(deptId))
+    callesUrl.searchParams.set('max', String(pageSize))
+    callesUrl.searchParams.set('inicio', String(inicio))
+    callesUrl.searchParams.set('campos', 'nombre')
+    const callesRes = await fetch(callesUrl)
+    if (!callesRes.ok) break
+    const callesData = await callesRes.json()
+    const batch = callesData.calles || []
+    total = Number(callesData.total ?? batch.length)
+    for (const calle of batch) {
+      if (calle?.nombre) names.add(String(calle.nombre).trim())
+    }
+    if (batch.length === 0) break
+    inicio += batch.length
+  }
+
+  return names
+}
+
+const CALLES_PUNTOS_CACHE_MS = 24 * 60 * 60 * 1000
+const callesPuntosCache = new Map()
+
+function sampleStreetNames(names, max) {
+  const list = [...names].sort((a, b) => a.localeCompare(b, 'es'))
+  if (list.length <= max) return list
+  const step = list.length / max
+  const picked = []
+  for (let i = 0; i < max; i += 1) {
+    picked.push(list[Math.min(list.length - 1, Math.floor(i * step))])
+  }
+  return picked
+}
+
+app.get('/api/geo/calles-puntos', async (req, res) => {
+  const provincia = String(req.query.provincia || '').trim()
+  const departamento = String(req.query.departamento || '').trim()
+  const maxRaw = Number(req.query.max)
+  const max = Math.min(180, Math.max(40, Number.isFinite(maxRaw) ? maxRaw : 120))
+  if (!provincia || !departamento) {
+    res.status(400).json({ error: 'provincia y departamento son obligatorios' })
+    return
+  }
+  const cacheKey = `${provincia}|${departamento}|${max}`
+  const cached = callesPuntosCache.get(cacheKey)
+  if (cached && Date.now() - cached.ts < CALLES_PUNTOS_CACHE_MS) {
+    res.json(cached.data)
+    return
+  }
+  try {
+    const deptId = await resolveDepartamentoId(provincia, departamento)
+    if (!deptId) {
+      res.json({ type: 'FeatureCollection', features: [] })
+      return
+    }
+    const allNames = await fetchCallesByDepartamentoId(deptId)
+    const sample = sampleStreetNames(allNames, max)
+    const features = []
+    const batchSize = 12
+    for (let i = 0; i < sample.length; i += batchSize) {
+      const batch = sample.slice(i, i + batchSize)
+      const hits = await Promise.all(
+        batch.map(async (nombre) => {
+          const point = await georefDireccionResolve(provincia, departamento, nombre)
+          if (!point) return null
+          return {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [point.lng, point.lat] },
+            properties: { nombre, tipo: 'calle' },
+          }
+        }),
+      )
+      for (const feature of hits) {
+        if (feature) features.push(feature)
+      }
+    }
+    const data = { type: 'FeatureCollection', features }
+    callesPuntosCache.set(cacheKey, { ts: Date.now(), data })
+    res.json(data)
+  } catch {
+    res.status(502).json({ error: 'No se pudieron ubicar calles del departamento' })
+  }
+})
+
+app.get('/api/geo/calles', async (req, res) => {
+  const provincia = String(req.query.provincia || '').trim()
+  const departamento = String(req.query.departamento || '').trim()
+  const exclude = String(req.query.exclude || '').trim()
+  if (!provincia || !departamento) {
+    res.status(400).json({ error: 'provincia y departamento son obligatorios' })
+    return
+  }
+  try {
+    const deptId = await resolveDepartamentoId(provincia, departamento)
+    const names = deptId ? await fetchCallesByDepartamentoId(deptId) : new Set()
+
+    if (names.size < 5) {
+      const locUrl = deptId
+        ? `https://apis.datos.gob.ar/georef/api/localidades?departamento=${deptId}&max=500&campos=nombre`
+        : null
+      if (locUrl) {
+        const lr = await fetch(locUrl)
+        const ld = await lr.json()
+        for (const loc of ld.localidades || []) {
+          if (loc?.nombre) names.add(String(loc.nombre).trim())
+        }
+      }
+    }
+
+    let list = [...names].sort((a, b) => a.localeCompare(b, 'es'))
+    if (exclude) {
+      const ex = exclude.toLowerCase()
+      list = list.filter((n) => n.toLowerCase() !== ex)
+    }
+    res.json(list)
+  } catch {
+    res.status(502).json({ error: 'No se pudo cargar calles del departamento' })
+  }
+})
+
 app.get('/api/places', async (req, res) => {
-  const { category, q, areaKey, country, province, department } = req.query
+  const { category, q, areaKey, country, province, department, scope } = req.query
   const conditions = []
   const params = []
+  const searchQuery = String(q || '').trim()
+  const isNationalSearch = searchQuery.length > 0
+  const scopeProvince = scope === 'province'
+  const scopeDepartment = scope === 'department'
 
   if (category && category !== 'all') {
     if (category === 'hospitales') {
@@ -348,37 +524,217 @@ app.get('/api/places', async (req, res) => {
       params.push(category)
     }
   }
-  if (q) {
+  if (isNationalSearch) {
     conditions.push('LOWER(name) LIKE ?')
-    params.push(`%${String(q).toLowerCase()}%`)
+    params.push(`%${searchQuery.toLowerCase()}%`)
   }
   if (country && String(country).toLowerCase() !== 'argentina') {
     res.json([])
     return
   }
-  if (province && String(province).toLowerCase() !== 'all') {
-    conditions.push('province = ?')
-    params.push(String(province))
-  }
-  if (department && String(department).toLowerCase() !== 'all') {
-    conditions.push('department = ?')
-    params.push(String(department))
-  }
-  if (areaKey && areaKey !== 'argentina') {
-    const area = await get('SELECT * FROM areas WHERE key = ?', [areaKey])
-    if (area?.level === 'province') {
-      conditions.push('(province = ?)')
-      params.push(area.name)
-    }
-    if (area?.level === 'department') {
-      conditions.push('(areaKey = ?)')
-      params.push(area.key)
+  if (!isNationalSearch && !scopeProvince && !scopeDepartment) {
+    if (areaKey && areaKey !== 'argentina') {
+      const area = await get('SELECT * FROM areas WHERE key = ?', [areaKey])
+      if (area?.level === 'department') {
+        conditions.push('(areaKey = ?)')
+        params.push(area.key)
+      }
     }
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-  const rows = await all(`SELECT * FROM places ${where} ORDER BY id`, params)
+  let rows = await all(`SELECT * FROM places ${where} ORDER BY id`, params)
+
+  if (!isNationalSearch) {
+    if (scopeProvince && province) {
+      rows = filterPlacesByProvince(rows, province)
+    } else if (scopeDepartment && province && department) {
+      rows = filterPlacesByProvince(rows, province)
+      rows = filterPlacesByDepartment(rows, department)
+    } else if (province && String(province).toLowerCase() !== 'all') {
+      rows = filterPlacesByProvince(rows, province)
+      if (department && String(department).toLowerCase() !== 'all') {
+        rows = filterPlacesByDepartment(rows, department)
+      }
+    } else if (areaKey && areaKey !== 'argentina' && !scopeProvince && !scopeDepartment) {
+      const area = await get('SELECT * FROM areas WHERE key = ?', [areaKey])
+      if (area?.level === 'province') {
+        rows = filterPlacesByProvince(rows, area.name)
+      }
+    }
+  }
+
   res.json(rows)
+})
+
+app.get('/api/places/by-ids', async (req, res) => {
+  const ids = String(req.query.ids || '')
+    .split(',')
+    .map((x) => Number(x.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0)
+  if (!ids.length) {
+    res.json([])
+    return
+  }
+  const placeholders = ids.map(() => '?').join(',')
+  const rows = await all(`SELECT * FROM places WHERE id IN (${placeholders})`, ids)
+  res.json(rows)
+})
+
+async function georefDireccionResolve(provincia, departamento, direccion) {
+  const line = String(direccion || '').trim()
+  if (!line || !provincia || !departamento) return null
+  const url = new URL('https://apis.datos.gob.ar/georef/api/direcciones')
+  url.searchParams.set('direccion', line)
+  url.searchParams.set('provincia', provincia)
+  url.searchParams.set('departamento', departamento)
+  url.searchParams.set('max', '1')
+  const response = await fetch(url)
+  if (!response.ok) return null
+  const data = await response.json()
+  const ubicacion = data.direcciones?.[0]?.ubicacion
+  if (ubicacion?.lat == null || ubicacion?.lon == null) return null
+  return { lat: Number(ubicacion.lat), lng: Number(ubicacion.lon) }
+}
+
+async function nominatimSearch(query, viewbox) {
+  const url = new URL('https://nominatim.openstreetmap.org/search')
+  url.searchParams.set('q', query)
+  url.searchParams.set('format', 'json')
+  url.searchParams.set('countrycodes', 'ar')
+  url.searchParams.set('limit', '5')
+  if (viewbox) {
+    url.searchParams.set('viewbox', viewbox)
+    url.searchParams.set('bounded', '1')
+  }
+  const response = await fetch(url, {
+    headers: { 'User-Agent': 'WayTurismo/1.0 (wayturismo@local.dev)' },
+  })
+  if (!response.ok) return null
+  const data = await response.json()
+  const first = data?.[0]
+  if (!first?.lat || !first?.lon) return null
+  return { lat: Number(first.lat), lng: Number(first.lon) }
+}
+
+async function departmentNominatimViewbox(provincia, departamento) {
+  const deptId = await resolveDepartamentoId(provincia, departamento)
+  if (!deptId) return null
+  const dr = await fetch(
+    `https://apis.datos.gob.ar/georef/api/departamentos?id=${deptId}&campos=centroide`,
+  )
+  if (!dr.ok) return null
+  const dd = await dr.json()
+  const c = dd.departamentos?.[0]?.centroide
+  if (c?.lat == null || c?.lon == null) return null
+  const lat = Number(c.lat)
+  const lon = Number(c.lon)
+  const pad = 0.35
+  const left = lon - pad
+  const right = lon + pad
+  const top = lat + pad
+  const bottom = lat - pad
+  return `${left},${top},${right},${bottom}`
+}
+
+async function departmentCentroid(provincia, departamento) {
+  const deptId = await resolveDepartamentoId(provincia, departamento)
+  if (!deptId) return null
+  const dr = await fetch(`https://apis.datos.gob.ar/georef/api/departamentos?id=${deptId}&campos=centroide`)
+  if (!dr.ok) return null
+  const dd = await dr.json()
+  const centroide = dd.departamentos?.[0]?.centroide
+  if (centroide?.lat == null || centroide?.lon == null) return null
+  return { lat: Number(centroide.lat), lng: Number(centroide.lon) }
+}
+
+app.get('/api/geo/event-location', async (req, res) => {
+  const provincia = String(req.query.provincia || '').trim()
+  const departamento = String(req.query.departamento || '').trim()
+  const calle1 = String(req.query.calle1 || '').trim()
+  const calle2 = String(req.query.calle2 || '').trim()
+  const sitio = String(req.query.sitio || '').trim()
+  if (!provincia || !departamento) {
+    res.status(400).json({ error: 'provincia y departamento son obligatorios' })
+    return
+  }
+  try {
+    const streetLine = calle1 && calle2 ? `${calle1} y ${calle2}` : calle1 || calle2
+    const georefLines = [
+      streetLine,
+      calle1 && calle2 ? null : calle1,
+      calle1 && calle2 ? null : calle2,
+    ].filter(Boolean)
+
+    for (const line of georefLines) {
+      const hit = await georefDireccionResolve(provincia, departamento, line)
+      if (hit) {
+        res.json({ ...hit, precision: 'intersection' })
+        return
+      }
+    }
+
+    const viewbox = await departmentNominatimViewbox(provincia, departamento)
+    const queries = [
+      streetLine ? `${streetLine}, ${departamento}, ${provincia}, Argentina` : null,
+      sitio && streetLine ? `${sitio}, ${streetLine}, ${departamento}, ${provincia}, Argentina` : null,
+      calle1 ? `${calle1}, ${departamento}, ${provincia}, Argentina` : null,
+    ].filter(Boolean)
+
+    for (const query of queries) {
+      const hit = await nominatimSearch(query, viewbox)
+      if (hit) {
+        res.json({ ...hit, precision: 'address' })
+        return
+      }
+    }
+
+    const center = await departmentCentroid(provincia, departamento)
+    if (center) {
+      res.json({ ...center, precision: 'department' })
+      return
+    }
+    res.status(404).json({ error: 'No se pudo ubicar el evento' })
+  } catch {
+    res.status(502).json({ error: 'No se pudo ubicar el evento' })
+  }
+})
+
+app.get('/api/geocode', async (req, res) => {
+  const query = String(req.query.q || '').trim()
+  if (query.length < 2) {
+    res.json([])
+    return
+  }
+  try {
+    const url = new URL('https://nominatim.openstreetmap.org/search')
+    url.searchParams.set('q', query)
+    url.searchParams.set('format', 'json')
+    url.searchParams.set('countrycodes', 'ar')
+    url.searchParams.set('limit', '6')
+    url.searchParams.set('addressdetails', '0')
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'WayTurismo/1.0 (wayturismo@local.dev)' },
+    })
+    if (!response.ok) {
+      res.status(502).json({ error: 'No se pudo geocodificar' })
+      return
+    }
+    const data = await response.json()
+    res.json(
+      data.map((item) => ({
+        id: `geo-${item.place_id}`,
+        name: String(item.display_name).split(',')[0].trim(),
+        displayName: item.display_name,
+        lat: Number(item.lat),
+        lng: Number(item.lon),
+        kind: 'geocode',
+        placeType: item.type || item.class || '',
+      })),
+    )
+  } catch {
+    res.status(502).json({ error: 'No se pudo geocodificar' })
+  }
 })
 
 app.post('/api/favorites/:placeId/toggle', auth, async (req, res) => {
@@ -410,6 +766,17 @@ app.post('/api/routes', auth, async (req, res) => {
 })
 
 app.get('/api/routes', auth, async (req, res) => {
+  const rows = await all('SELECT id, name, placeIds, createdAt FROM routes WHERE userId = ? ORDER BY id DESC', [req.user.sub])
+  res.json(rows.map((r) => ({ ...r, placeIds: JSON.parse(r.placeIds) })))
+})
+
+app.delete('/api/routes/:id', auth, async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isFinite(id)) {
+    res.status(400).json({ error: 'Ruta invalida' })
+    return
+  }
+  await run('DELETE FROM routes WHERE id = ? AND userId = ?', [id, req.user.sub])
   const rows = await all('SELECT id, name, placeIds, createdAt FROM routes WHERE userId = ? ORDER BY id DESC', [req.user.sub])
   res.json(rows.map((r) => ({ ...r, placeIds: JSON.parse(r.placeIds) })))
 })

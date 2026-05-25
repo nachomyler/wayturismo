@@ -15,9 +15,7 @@ dist-ssr
 server/data/*.sqlite
 server/data/*.sqlite-*
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
+# Editor (configuracion VS Code del proyecto se versiona)
 .idea
 .DS_Store
 *.suo
