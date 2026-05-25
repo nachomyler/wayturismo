@@ -3,6 +3,5 @@ npm-debug.log
 dist
 .git
 .github
-.cursor
 server/data/*.sqlite
 server/data/*.sqlite-*

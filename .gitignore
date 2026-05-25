@@ -15,7 +15,9 @@ dist-ssr
 server/data/*.sqlite
 server/data/*.sqlite-*
 
-# Editor (configuracion VS Code del proyecto se versiona)
+# Herramientas y carpetas locales (no subir)
+.cursor/
+.cursorrules
 .idea
 .DS_Store
 *.suo
@@ -23,3 +25,4 @@ server/data/*.sqlite-*
 *.njsproj
 *.sln
 *.sw?
+wayturismo.code-workspace
