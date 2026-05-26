@@ -18,6 +18,9 @@
     "start": "node services/gateway/index.js",
     "start:monolith": "node server/index.js",
     "lint": "eslint .",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --test tests/unit/*.test.js",
+    "test:e2e": "node --test tests/e2e/*.test.js",
     "preview": "vite preview",
     "postinstall": "node scripts/setup.mjs"
   },
