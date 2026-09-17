@@ -55,7 +55,7 @@ const CATEGORY_ICON_URL = {
 }
 
 const CATEGORY_FILTERS = [
-  { key: 'all', label: 'Todas' },
+  { key: 'none', label: 'Ninguna' },
   { key: 'bodegas', label: 'Bodegas' },
   { key: 'olivicolas', label: 'Olivícolas' },
   { key: 'religioso', label: 'Religioso' },
@@ -179,6 +179,164 @@ function ringCentroid(ring) {
   }
 }
 
+function shortProvinceLabel(name) {
+  const n = String(name || '').trim()
+  const key = normalizeGeoName(n)
+  const aliases = {
+    'ciudad autonoma de buenos aires': 'CABA',
+    'tierra del fuego antartida e islas del atlantico sur': 'T. Fuego',
+    'tierra del fuego': 'T. Fuego',
+    'santiago del estero': 'Sgo. Estero',
+    'rio negro': 'R. Negro',
+    'santa cruz': 'Sta. Cruz',
+    'san luis': 'S. Luis',
+    'san juan': 'S. Juan',
+    'la pampa': 'L. Pampa',
+    'la rioja': 'L. Rioja',
+    'entre rios': 'E. Ríos',
+    'buenos aires': 'B. Aires',
+    'santa fe': 'Sta. Fe',
+    'cordoba': 'Córdoba',
+    'mendoza': 'Mendoza',
+    'tucuman': 'Tucumán',
+    'salta': 'Salta',
+    'jujuy': 'Jujuy',
+    'chaco': 'Chaco',
+    'formosa': 'Formosa',
+    'misiones': 'Misiones',
+    'corrientes': 'Ctes.',
+    'catamarca': 'Catam.',
+    'neuquen': 'Neuquén',
+    'chubut': 'Chubut',
+  }
+  return aliases[key] || n
+}
+
+function shortDepartmentLabel(name) {
+  let n = String(name || '').trim()
+  if (!n) return n
+
+  const exact = {
+    [normalizeGeoName('Ciudad Autónoma de Buenos Aires')]: 'CABA',
+    [normalizeGeoName('Comuna 1')]: 'C1',
+  }
+  const exactKey = normalizeGeoName(n)
+  if (exact[exactKey]) return exact[exactKey]
+
+  n = n
+    .replace(/\bGeneral\b/gi, 'Gral.')
+    .replace(/\bCoronel\b/gi, 'Cnel.')
+    .replace(/\bTeniente\b/gi, 'Tte.')
+    .replace(/\bCapit[aá]n\b/gi, 'Cap.')
+    .replace(/\bDoctor\b/gi, 'Dr.')
+    .replace(/\bDoctora\b/gi, 'Dra.')
+    .replace(/\bPresidente\b/gi, 'Pte.')
+    .replace(/\bGobernador\b/gi, 'Gob.')
+    .replace(/\bAlmirante\b/gi, 'Alm.')
+    .replace(/\bBrigadier\b/gi, 'Brig.')
+    .replace(/\bComandante\b/gi, 'Cmdte.')
+    .replace(/\bSargento\b/gi, 'Sgto.')
+    .replace(/\bMayor\b/gi, 'My.')
+    .replace(/\bSanta\b/gi, 'Sta.')
+    .replace(/\bSanto\b/gi, 'Sto.')
+    .replace(/\bDepartamento\b/gi, '')
+    .replace(/\bPartido\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+
+  if (n.length > 18) {
+    const parts = n.split(/\s+/)
+    if (parts.length >= 3) {
+      return `${parts[0]} ${parts[1].charAt(0)}. ${parts.slice(2).join(' ')}`.slice(0, 20)
+    }
+    if (n.length > 20) return `${n.slice(0, 18)}…`
+  }
+  return n
+}
+
+/** Empujones [lat, lng] para separar etiquetas en zonas densas (NOA / NEA / CABA). */
+const PROVINCE_LABEL_NUDGE = {
+  'ciudad autonoma de buenos aires': [0.35, -0.55],
+  'buenos aires': [-1.1, 0.55],
+  'tucuman': [0.55, -0.15],
+  'santiago del estero': [-0.75, 0.7],
+  'salta': [-0.45, 0.15],
+  'jujuy': [0.45, -0.25],
+  'formosa': [0.35, -0.2],
+  'chaco': [-0.35, 0.1],
+  'misiones': [-0.55, -0.35],
+  'corrientes': [0.15, 0.35],
+  'entre rios': [0.35, 0.25],
+  'santa fe': [-0.15, -0.2],
+  'cordoba': [0.15, 0],
+  'catamarca': [-0.55, -0.55],
+  'la rioja': [-0.25, 0.2],
+  'san juan': [0.35, -0.25],
+  'mendoza': [0.1, 0.35],
+  'san luis': [-0.15, 0.2],
+  'la pampa': [0.2, 0],
+  'neuquen': [0.45, 0.25],
+  'rio negro': [-0.55, 0.1],
+  'chubut': [0.4, 0.15],
+  'santa cruz': [0.7, 0.35],
+  'tierra del fuego antartida e islas del atlantico sur': [2.4, -1.1],
+  'tierra del fuego': [0.35, -0.4],
+}
+
+function featureBoundsSize(feature) {
+  try {
+    const b = L.geoJSON(feature).getBounds()
+    if (!b.isValid()) return { w: 0, h: 0, span: 0, bounds: null }
+    const w = b.getEast() - b.getWest()
+    const h = b.getNorth() - b.getSouth()
+    return { w, h, span: Math.max(w, h), bounds: b }
+  } catch {
+    return { w: 0, h: 0, span: 0, bounds: null }
+  }
+}
+
+function featureApproxSpan(feature) {
+  return featureBoundsSize(feature).span
+}
+
+function provinceLabelSizeClass(feature, label, provinceName) {
+  const key = normalizeGeoName(provinceName)
+  // Zona NOA muy densa: forzar texto chico para que no se pisen
+  if (key === 'tucuman' || key === 'catamarca' || key === 'santiago del estero') {
+    return ' geo-label-province--xs'
+  }
+  const { w, h } = featureBoundsSize(feature)
+  const density = String(label || '').length / Math.max(w, 0.12)
+  if (w < 0.9 || h < 0.9 || density > 16) return ' geo-label-province--xs'
+  if (w < 2 || h < 1.6 || density > 9) return ' geo-label-province--sm'
+  if (w > 5.5 && h > 4 && density < 2.8) return ' geo-label-province--lg'
+  if (w > 3.2 && density < 4.2) return ' geo-label-province--md'
+  return ''
+}
+
+function provinceLabelPosition(feature, name) {
+  const key = normalizeGeoName(name)
+  const nudge = PROVINCE_LABEL_NUDGE[key] || [0, 0]
+  const { bounds } = featureBoundsSize(feature)
+  let center = featureLabelLatLng(feature)
+  if (!center && bounds?.isValid?.()) {
+    center = [bounds.getCenter().lat, bounds.getCenter().lng]
+  }
+  if (!center) return null
+
+  // Para provincias alargadas (p. ej. Misiones), preferir el centro del bbox
+  // y empujar con nudge para aprovechar el cuerpo del polígono.
+  if (bounds?.isValid?.()) {
+    const w = bounds.getEast() - bounds.getWest()
+    const h = bounds.getNorth() - bounds.getSouth()
+    if (h / Math.max(w, 0.01) > 2.2 || w / Math.max(h, 0.01) > 2.2) {
+      center = [bounds.getCenter().lat, bounds.getCenter().lng]
+    }
+  }
+
+  return [center[0] + nudge[0], center[1] + nudge[1]]
+}
+
 function featureLabelLatLng(feature) {
   const geometry = feature?.geometry
   if (!geometry) return null
@@ -215,20 +373,36 @@ function PolygonLabelsLayer({ data, level }) {
       const name = feature.properties?.nombre
       if (!name) continue
       try {
-        const computedCenter = featureLabelLatLng(feature)
-        let center = computedCenter
-        if (!center) {
-          const b = L.geoJSON(feature).getBounds()
-          if (!b.isValid()) continue
-          center = [b.getCenter().lat, b.getCenter().lng]
+        const labelText = level === 'province' ? shortProvinceLabel(name) : shortDepartmentLabel(name)
+        let center
+        let sizeClass = ''
+        if (level === 'province') {
+          center = provinceLabelPosition(feature, name)
+          sizeClass = provinceLabelSizeClass(feature, labelText, name)
+        } else {
+          center = featureLabelLatLng(feature)
+          if (!center) {
+            const b = L.geoJSON(feature).getBounds()
+            if (!b.isValid()) continue
+            center = [b.getCenter().lat, b.getCenter().lng]
+          }
+          const span = featureApproxSpan(feature)
+          if (span < 0.25) sizeClass = ' geo-label-department--xs'
+          else if (span < 0.55) sizeClass = ' geo-label-department--sm'
+          else if (span > 1.4) sizeClass = ' geo-label-department--lg'
         }
+        if (!center) continue
+        const safeHtml = String(labelText)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
         const icon = L.divIcon({
           className: 'geo-label-marker',
-          html: `<span class="${className}">${name}</span>`,
+          html: `<span class="${className}${sizeClass}">${safeHtml}</span>`,
           iconSize: [1, 1],
           iconAnchor: [0, 0],
         })
-        const marker = L.marker(center, { icon, interactive: false })
+        const marker = L.marker(center, { icon, interactive: false, keyboard: false })
         group.addLayer(marker)
       } catch {
         /* ignore invalid geometry */
@@ -247,9 +421,10 @@ const MAP_TILES = {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     attribution: '&copy; OpenStreetMap contributors',
   },
+  // Sin API key: mismo OSM (antes Carto Voyager pedía clave y mostraba "API KEY REQUIRED")
   department: {
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; OpenStreetMap contributors',
   },
 }
 
@@ -259,6 +434,126 @@ function MapZoomLimits({ minZoom, maxZoom }) {
     map.setMinZoom(minZoom)
     map.setMaxZoom(maxZoom)
   }, [map, minZoom, maxZoom])
+  return null
+}
+
+/** Vista fija (sin pan/zoom): país o provincia; solo clic para entrar al siguiente nivel. */
+function MapFixedViewLock({
+  locked,
+  fitData,
+  clampMainland = false,
+  pad = 28,
+  unlockMinZoom = 4,
+  unlockMaxZoom = 14,
+  lockClassName = 'map-locked-view',
+}) {
+  const map = useMap()
+  useEffect(() => {
+    if (!locked) {
+      map.dragging.enable()
+      map.touchZoom.enable()
+      map.doubleClickZoom.enable()
+      map.scrollWheelZoom.enable()
+      map.boxZoom.enable()
+      map.keyboard.enable()
+      map.setMinZoom(unlockMinZoom)
+      map.setMaxZoom(unlockMaxZoom)
+      map.getContainer().classList.remove(lockClassName)
+      return undefined
+    }
+
+    map.dragging.disable()
+    map.touchZoom.disable()
+    map.doubleClickZoom.disable()
+    map.scrollWheelZoom.disable()
+    map.boxZoom.disable()
+    map.keyboard.disable()
+    map.getContainer().classList.add(lockClassName)
+
+    if (fitData?.features?.length) {
+      try {
+        const b = clampMainland
+          ? getMainlandFitBounds(fitData)
+          : L.geoJSON(fitData).getBounds()
+        if (b?.isValid?.()) {
+          map.fitBounds(b, { padding: [pad, pad], animate: false })
+          const z = map.getZoom()
+          map.setMinZoom(z)
+          map.setMaxZoom(z)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    return () => {
+      map.getContainer().classList.remove(lockClassName)
+      map.dragging.enable()
+      map.touchZoom.enable()
+      map.doubleClickZoom.enable()
+      map.scrollWheelZoom.enable()
+      map.boxZoom.enable()
+      map.keyboard.enable()
+      map.setMinZoom(unlockMinZoom)
+      map.setMaxZoom(unlockMaxZoom)
+    }
+  }, [locked, fitData, clampMainland, pad, map, unlockMinZoom, unlockMaxZoom, lockClassName])
+  return null
+}
+
+/** Cámara acotada a un área (provincia o departamento): zoom/pan libres sin salir. */
+function MapAreaCamera({
+  enabled,
+  areaGeo,
+  maxZoom = 18,
+  fitMaxZoom = 14,
+  padFactor = 0.1,
+  fitPadding = 44,
+}) {
+  const map = useMap()
+  useEffect(() => {
+    if (!enabled || !areaGeo?.features?.length) {
+      map.setMaxBounds(L.latLngBounds(MAINLAND_BOUNDS))
+      map.setMinZoom(4)
+      map.setMaxZoom(maxZoom)
+      map.options.maxBoundsViscosity = 1
+      return undefined
+    }
+
+    map.dragging.enable()
+    map.touchZoom.enable()
+    map.doubleClickZoom.enable()
+    map.scrollWheelZoom.enable()
+    map.boxZoom.enable()
+    map.keyboard.enable()
+
+    try {
+      const bounds = L.geoJSON(areaGeo).getBounds()
+      if (!bounds.isValid()) return undefined
+
+      const limitBounds = bounds.pad(padFactor)
+      map.fitBounds(bounds, { padding: [fitPadding, fitPadding], animate: false, maxZoom: fitMaxZoom })
+      const fitZoom = map.getZoom()
+
+      map.setMaxBounds(limitBounds)
+      map.options.maxBoundsViscosity = 1
+      map.setMinZoom(fitZoom)
+      map.setMaxZoom(maxZoom)
+
+      if (!limitBounds.contains(map.getCenter())) {
+        map.panInsideBounds(limitBounds, { animate: false })
+      }
+    } catch {
+      /* ignore */
+    }
+
+    return () => {
+      map.setMaxBounds(L.latLngBounds(MAINLAND_BOUNDS))
+      map.options.maxBoundsViscosity = 1
+      map.setMinZoom(4)
+      map.setMaxZoom(maxZoom)
+    }
+  }, [enabled, areaGeo, maxZoom, fitMaxZoom, padFactor, fitPadding, map])
   return null
 }
 
@@ -766,17 +1061,17 @@ const EMPTY_ADMIN_FORM = {
   lng: '',
 }
 
-function AdminMapClickHandler({ enabledRef, onPickRef, pickMode }) {
+function AdminMapClickHandler({ enabledRef, onPickRef, pickMode, allowPick }) {
   const map = useMap()
   useEffect(() => {
     const el = map.getContainer()
-    if (enabledRef.current) el.classList.add('map-cursor--admin-pick')
+    if (allowPick && enabledRef.current) el.classList.add('map-cursor--admin-pick')
     else el.classList.remove('map-cursor--admin-pick')
     return () => el.classList.remove('map-cursor--admin-pick')
-  }, [enabledRef, map, pickMode])
+  }, [enabledRef, map, pickMode, allowPick])
   useMapEvents({
     click(e) {
-      if (!enabledRef.current) return
+      if (!allowPick || !enabledRef.current) return
       L.DomEvent.stopPropagation(e)
       onPickRef.current(e.latlng.lat, e.latlng.lng)
     },
@@ -832,6 +1127,7 @@ function App() {
   })
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
   const [places, setPlaces] = useState([])
+  const [adminPlaces, setAdminPlaces] = useState([])
   const [selectedCountry, setSelectedCountry] = useState('Argentina')
   const [selectedProvince, setSelectedProvince] = useState('')
   const [selectedDepartment, setSelectedDepartment] = useState('')
@@ -843,7 +1139,7 @@ function App() {
   const [countryOptions] = useState(['Argentina'])
   const [provinceOptions, setProvinceOptions] = useState([])
   const [departmentOptions, setDepartmentOptions] = useState([])
-  const [selectedCategory, setSelectedCategory] = useState('all')
+  const [selectedCategory, setSelectedCategory] = useState('none')
   const [searchText, setSearchText] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [searchFocused, setSearchFocused] = useState(false)
@@ -938,28 +1234,43 @@ function App() {
     return matched.length ? { type: 'FeatureCollection', features: matched } : null
   }, [departmentsGeoData, selectedDepartment])
 
+  const selectedProvincePolygon = useMemo(() => {
+    if (!provincesGeoData?.features?.length || !selectedProvince) return null
+    const matched = provincesGeoData.features.filter((f) => f.properties?.nombre === selectedProvince)
+    return matched.length ? { type: 'FeatureCollection', features: matched } : null
+  }, [provincesGeoData, selectedProvince])
+
   const boundsData = useMemo(() => {
     if (selectedCountry !== 'Argentina') return null
     if (mapLevel === 'country' && provincesGeoData?.features?.length) return provincesGeoData
     if (mapLevel === 'province' && departmentsGeoData?.features?.length) return departmentsGeoData
     if (mapLevel === 'department') {
-      if (localitiesGeoData?.features?.length) return localitiesGeoData
       if (selectedDeptPolygon?.features?.length) return selectedDeptPolygon
+      if (localitiesGeoData?.features?.length) return localitiesGeoData
     }
     return null
   }, [mapLevel, provincesGeoData, departmentsGeoData, localitiesGeoData, selectedDeptPolygon, selectedCountry])
 
-  const boundsMaxZoom = mapLevel === 'country' ? 6 : mapLevel === 'province' ? 9 : 16
-  const mapMaxZoom = mapLevel === 'department' ? 18 : 14
+  const boundsMaxZoom = mapLevel === 'country' ? 6 : mapLevel === 'province' ? 9 : 14
+  const mapMaxZoom = mapLevel === 'department' ? 18 : mapLevel === 'province' ? 12 : 14
   const mapTile = mapLevel === 'department' ? MAP_TILES.department : MAP_TILES.default
+  const mapViewLocked = mapLevel === 'country'
+  const mapInteractionsEnabled = mapLevel === 'province' || mapLevel === 'department'
+  const lockedFitData = mapLevel === 'country' ? provincesGeoData : null
+  const areaCameraGeo = mapLevel === 'department'
+    ? selectedDeptPolygon
+    : mapLevel === 'province'
+      ? (selectedProvincePolygon || departmentsGeoData)
+      : null
 
   const isSearching = debouncedSearch.trim().length > 0
 
   const visiblePlaces = useMemo(() => {
     if (isSearching && searchResultPlaces.length > 0) return searchResultPlaces
     if (isSearching && places.length > 0) return places
+    if (selectedCategory === 'none') return []
     return places
-  }, [isSearching, searchResultPlaces, places])
+  }, [isSearching, searchResultPlaces, places, selectedCategory])
 
   const searchMatch = useMemo(
     () => (isSearching ? findBestPlaceMatch(visiblePlaces, debouncedSearch) : null),
@@ -996,7 +1307,7 @@ function App() {
       }
     }
     return [...merged.values()]
-      .filter((group) => selectedCategory === 'all' || normalizeCategory(group.category) === cat)
+      .filter((group) => selectedCategory !== 'none' && normalizeCategory(group.category) === cat)
       .filter((group) => group.items.length > 0)
   }, [selectedProvince, mapLevel, isMendozaContext, quickSearchMendoza, quickSearchNational, selectedCategory])
 
@@ -1017,8 +1328,13 @@ function App() {
 
   const fetchPlaces = useCallback(async () => {
     const query = debouncedSearch.trim()
+    if (!query && selectedCategory === 'none') {
+      setPlaces([])
+      setSearchResultPlaces([])
+      return
+    }
     const params = new URLSearchParams({
-      category: selectedCategory,
+      category: selectedCategory === 'none' ? 'all' : selectedCategory,
       country: selectedCountry,
     })
     if (query) {
@@ -1042,14 +1358,15 @@ function App() {
   }, [])
 
   const applyCategoryFilter = useCallback((key) => {
-    const normalized = key === 'all' ? 'all' : normalizeCategory(key)
+    const normalized = key === 'none' || key === 'all' ? 'none' : normalizeCategory(key)
     setSelectedCategory(normalized)
-    if (normalized === 'all') {
+    if (normalized === 'none') {
       setSearchText('')
       setDebouncedSearch('')
       setSearchResultPlaces([])
       setGeocodePin(null)
       setSearchFocused(false)
+      setPlaces([])
       userMapNavigationRef.current = true
     }
   }, [])
@@ -1258,6 +1575,16 @@ function App() {
     setFavoriteIds(data)
   }, [token])
 
+  const fetchAdminPlaces = useCallback(async () => {
+    if (currentUser?.role !== 'admin') {
+      setAdminPlaces([])
+      return
+    }
+    const response = await fetch(`${API_URL}/places?category=all&country=Argentina&areaKey=argentina`)
+    const data = await response.json()
+    setAdminPlaces(Array.isArray(data) ? data : [])
+  }, [currentUser?.role])
+
   const fetchRoutes = useCallback(async () => {
     if (!token) return
     const response = await fetch(`${API_URL}/routes`, {
@@ -1339,7 +1666,7 @@ function App() {
       try {
         const params = new URLSearchParams({
           q: query,
-          category: selectedCategory,
+          category: selectedCategory === 'none' ? 'all' : selectedCategory,
           country: selectedCountry,
         })
         const [placesRes, geoRes] = await Promise.all([
@@ -1377,6 +1704,10 @@ function App() {
     fetchFavorites()
     fetchRoutes()
   }, [fetchFavorites, fetchRoutes])
+
+  useEffect(() => {
+    fetchAdminPlaces()
+  }, [fetchAdminPlaces])
 
   useEffect(() => {
     try {
@@ -1823,11 +2154,13 @@ function App() {
   }, [handleAdminMapPick])
 
   const pickFromMapLayerClick = useCallback((e) => {
+    // Solo colocar lugares dentro del departamento; en país/provincia el clic navega
+    if (mapLevel !== 'department') return false
     if (!adminPlacePickModeRef.current) return false
     L.DomEvent.stopPropagation(e)
     handleAdminMapPickRef.current(e.latlng.lat, e.latlng.lng)
     return true
-  }, [])
+  }, [mapLevel])
 
   const resetAdminForm = useCallback(() => {
     setEditingId(0)
@@ -1880,7 +2213,9 @@ function App() {
         return
       }
       setPlaces(data)
+      setAdminPlaces(Array.isArray(data) ? data : [])
       resetAdminForm()
+      fetchPlaces()
     } catch {
       setAdminError('No se pudo conectar con el servidor.')
     }
@@ -2090,6 +2425,7 @@ function App() {
 
             <section className="sidebar-section">
               <h2 className="sidebar-section-title"><span className="section-icon" aria-hidden>🏷️</span> Tipo de lugar</h2>
+              <p className="filter-hint">Elegí un tipo para verlos en el mapa. Con &quot;Ninguna&quot; el mapa queda sin marcadores.</p>
               <div className="category-chips" role="group" aria-label="Filtrar categoría">
                 {CATEGORY_FILTERS.map(({ key, label }) => (
                   <button
@@ -2098,7 +2434,7 @@ function App() {
                     className={`category-chip${selectedCategory === key ? ' category-chip--active' : ''}`}
                     onClick={() => applyCategoryFilter(key)}
                   >
-                    {key !== 'all' ? (
+                    {key !== 'none' ? (
                       <img src={CATEGORY_ICON_URL[key]} alt="" width={20} height={20} />
                     ) : null}
                     {label}
@@ -2164,7 +2500,9 @@ function App() {
                   </button>
                   <p className="admin-map-hint">
                     {adminPlacePickMode
-                      ? 'Hacé clic en el mapa (o en una provincia/departamento). Aparece el pin naranja.'
+                      ? (mapLevel === 'department'
+                        ? 'Hacé clic dentro del departamento para ubicar el lugar. Aparece el pin naranja.'
+                        : 'Entrá a un departamento (clic en el mapa) y después marcá el lugar.')
                       : 'Pulsá el botón de arriba o el del mapa para empezar a marcar.'}
                   </p>
                   {adminForm.lat && adminForm.lng ? (
@@ -2201,8 +2539,8 @@ function App() {
                   </form>
                   {adminError ? <p className="error admin-error">{adminError}</p> : null}
                   <div className="admin-list">
-                    <h4>Lugares en el sistema ({places.length})</h4>
-                    {places.slice(0, 40).map((p) => (
+                    <h4>Lugares en el sistema ({adminPlaces.length})</h4>
+                    {adminPlaces.slice(0, 40).map((p) => (
                       <div key={p.id} className="admin-row">
                         <span>{p.name}</span>
                         <div>
@@ -2227,7 +2565,8 @@ function App() {
                                 headers: { Authorization: `Bearer ${token}` },
                               })
                               const data = await response.json()
-                              setPlaces(data)
+                              setAdminPlaces(Array.isArray(data) ? data : [])
+                              fetchPlaces()
                               if (editingId === p.id) resetAdminForm()
                             }}
                           >
@@ -2236,7 +2575,7 @@ function App() {
                         </div>
                       </div>
                     ))}
-                    {places.length > 40 ? <p className="admin-list-more">… y {places.length - 40} mas (usa busqueda en el mapa)</p> : null}
+                    {adminPlaces.length > 40 ? <p className="admin-list-more">… y {adminPlaces.length - 40} mas (usa busqueda en el mapa)</p> : null}
                   </div>
                 </div>
               </details>
@@ -2249,17 +2588,17 @@ function App() {
                 <div className="quick-search-toolbar">
                   <p className="quick-search-hint">
                     Lugares destacados en {selectedProvince}.
-                    {selectedCategory === 'all'
-                      ? ' Elegí una categoría arriba para acotar.'
+                    {selectedCategory === 'none'
+                      ? ' Elegí un tipo de lugar arriba para verlos en el mapa.'
                       : ` Filtrando: ${CATEGORY_FILTERS.find((c) => c.key === selectedCategory || normalizeCategory(c.key) === normalizeCategory(selectedCategory))?.label ?? selectedCategory}.`}
                   </p>
-                  {selectedCategory !== 'all' ? (
+                  {selectedCategory !== 'none' ? (
                     <button
                       type="button"
                       className="quick-search-reset"
-                      onClick={() => applyCategoryFilter('all')}
+                      onClick={() => applyCategoryFilter('none')}
                     >
-                      Mostrar todas
+                      Ocultar lugares
                     </button>
                   ) : null}
                 </div>
@@ -2630,31 +2969,77 @@ function App() {
             </div>
             {adminPlacePickMode ? (
               <p className="map-admin-banner" role="status">
-                Modo admin: hacé clic en el mapa para {editingId ? 'mover' : 'colocar'} el lugar. Completá el formulario en la barra lateral y pulsá Guardar.
+                {mapLevel === 'department'
+                  ? `Modo admin: hacé clic en el mapa para ${editingId ? 'mover' : 'colocar'} el lugar. Completá el formulario y Guardar.`
+                  : 'Modo admin: primero entrá a un departamento (clic en su nombre/área). Ahí podrás marcar el lugar.'}
               </p>
             ) : null}
+              {mapLevel === 'country' ? (
+                <p className="map-country-lock-hint" role="status">
+                  Mapa de Argentina fijo: hacé clic en una provincia para entrar.
+                </p>
+              ) : null}
+              {mapLevel === 'province' ? (
+                <p className="map-country-lock-hint" role="status">
+                  Cámara limitada a la provincia: podés hacer zoom y moverte; clic en un departamento para entrar.
+                </p>
+              ) : null}
+              {mapLevel === 'department' ? (
+                <p className="map-country-lock-hint" role="status">
+                  Cámara limitada al departamento: podés hacer zoom y moverte, sin salir de esta zona.
+                </p>
+              ) : null}
             <MapContainer
-              className={adminPlacePickMode ? 'map-container--admin-pick' : undefined}
+              className={`${adminPlacePickMode ? 'map-container--admin-pick' : ''}${mapViewLocked ? ' map-container--country-locked' : ''}`.trim() || undefined}
               center={DEFAULT_CENTER}
               zoom={DEFAULT_ZOOM}
-              scrollWheelZoom
+              scrollWheelZoom={mapInteractionsEnabled}
+              dragging={mapInteractionsEnabled}
+              doubleClickZoom={mapInteractionsEnabled}
+              touchZoom={mapInteractionsEnabled}
+              boxZoom={mapInteractionsEnabled}
+              keyboard={mapInteractionsEnabled}
               maxBounds={MAINLAND_BOUNDS}
               maxBoundsViscosity={1}
               minZoom={4}
-              maxZoom={14}
+              maxZoom={18}
               style={{ height: '600px', width: '100%' }}
             >
-              <MapZoomLimits minZoom={4} maxZoom={mapMaxZoom} />
-              {currentUser?.role === 'admin' ? (
-                <AdminMapClickHandler enabledRef={adminPlacePickModeRef} onPickRef={handleAdminMapPickRef} pickMode={adminPlacePickMode} />
+              <MapFixedViewLock
+                locked={mapViewLocked}
+                fitData={lockedFitData}
+                clampMainland
+                pad={28}
+                unlockMinZoom={4}
+                unlockMaxZoom={mapMaxZoom}
+              />
+              {(mapLevel === 'province' || mapLevel === 'department') ? (
+                <MapAreaCamera
+                  enabled
+                  areaGeo={areaCameraGeo}
+                  maxZoom={mapMaxZoom}
+                  fitMaxZoom={mapLevel === 'province' ? 9 : 14}
+                  padFactor={mapLevel === 'province' ? 0.06 : 0.1}
+                  fitPadding={mapLevel === 'province' ? 36 : 44}
+                />
               ) : null}
-              <TileLayer attribution={mapTile.attribution} url={mapTile.url} />
-              {mapFocus ? (
+              {currentUser?.role === 'admin' ? (
+                <AdminMapClickHandler
+                  enabledRef={adminPlacePickModeRef}
+                  onPickRef={handleAdminMapPickRef}
+                  pickMode={adminPlacePickMode}
+                  allowPick={mapLevel === 'department'}
+                />
+              ) : null}
+              <TileLayer key={mapTile.url} attribution={mapTile.attribution} url={mapTile.url} />
+              {mapViewLocked ? null : (mapLevel === 'province' || mapLevel === 'department') ? (
+                mapFocus ? <FlyToPoint point={mapFocus} /> : null
+              ) : mapFocus ? (
                 <FlyToPoint point={mapFocus} />
               ) : !boundsData ? (
                 <FlyToArea area={mapTarget} />
               ) : (
-                <FitBoundsGeoJson data={boundsData} maxZoom={boundsMaxZoom} clampMainland={mapLevel === 'country'} />
+                <FitBoundsGeoJson data={boundsData} maxZoom={boundsMaxZoom} clampMainland={false} />
               )}
               {selectedAreaData?.geojson && !(mapLevel === 'country' && provincesGeoData?.features?.length) ? (
                 <GeoJSON data={selectedAreaData.geojson} style={{ color: '#2563eb', weight: 2, fillOpacity: 0.08 }} />
