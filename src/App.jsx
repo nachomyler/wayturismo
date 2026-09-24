@@ -18,19 +18,110 @@ const MAINLAND_BOUNDS = [
   [-21.78, -53.62],
 ]
 
-function isStandaloneAntarcticaFeature(feature) {
-  const name = String(feature?.properties?.nombre || '')
+function normalizeGeoNameLocal(value) {
+  return String(value || '')
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-  return name === 'antartida'
+    .trim()
+}
+
+function isStandaloneAntarcticaFeature(feature) {
+  return normalizeGeoNameLocal(feature?.properties?.nombre) === 'antartida'
+}
+
+function ringCentroidLngLat(ring) {
+  if (!Array.isArray(ring) || ring.length < 3) return null
+  let area2 = 0
+  let cx = 0
+  let cy = 0
+  for (let i = 0; i < ring.length - 1; i += 1) {
+    const [x1, y1] = ring[i]
+    const [x2, y2] = ring[i + 1]
+    const cross = x1 * y2 - x2 * y1
+    area2 += cross
+    cx += (x1 + x2) * cross
+    cy += (y1 + y2) * cross
+  }
+  if (Math.abs(area2) < 1e-9) {
+    const [lng, lat] = ring[0] || []
+    if (lng == null || lat == null) return null
+    return [lng, lat]
+  }
+  return [cx / (3 * area2), cy / (3 * area2)]
+}
+
+function isTierraDelFuegoIslandPart(lng, lat, bounds = null) {
+  if (lat == null || lng == null || Number.isNaN(lat) || Number.isNaN(lng)) return false
+  if (lat < -55.12 || lat > -52.55) return false
+  if (lng < -68.7 || lng > -65.05) return false
+  if (bounds) {
+    if (bounds.minLat < -55.15) return false
+    if (bounds.maxLng > -64.9) return false
+    if (bounds.maxLat > -52.4) return false
+  }
+  return true
+}
+
+function polygonRingBounds(ring) {
+  if (!Array.isArray(ring) || !ring.length) return null
+  let minLat = Infinity
+  let maxLat = -Infinity
+  let minLng = Infinity
+  let maxLng = -Infinity
+  for (const [lng, lat] of ring) {
+    if (lat == null || lng == null) continue
+    minLat = Math.min(minLat, lat)
+    maxLat = Math.max(maxLat, lat)
+    minLng = Math.min(minLng, lng)
+    maxLng = Math.max(maxLng, lng)
+  }
+  if (!Number.isFinite(minLat)) return null
+  return { minLat, maxLat, minLng, maxLng }
+}
+
+function ringAreaAbs(ring) {
+  if (!Array.isArray(ring) || ring.length < 3) return 0
+  let area2 = 0
+  for (let i = 0; i < ring.length - 1; i += 1) {
+    const [x1, y1] = ring[i]
+    const [x2, y2] = ring[i + 1]
+    area2 += x1 * y2 - x2 * y1
+  }
+  return Math.abs(area2) / 2
+}
+
+function clipTierraDelFuegoFeature(feature) {
+  const name = normalizeGeoNameLocal(feature?.properties?.nombre)
+  if (!name.includes('tierra del fuego')) return feature
+  const geometry = feature.geometry
+  if (!geometry) return feature
+  const candidates = []
+  if (geometry.type === 'Polygon') candidates.push(geometry.coordinates)
+  else if (geometry.type === 'MultiPolygon') candidates.push(...(geometry.coordinates || []))
+  else return feature
+
+  const kept = candidates.filter((poly) => {
+    const c = ringCentroidLngLat(poly?.[0])
+    const b = polygonRingBounds(poly?.[0])
+    return c && isTierraDelFuegoIslandPart(c[0], c[1], b)
+  })
+  if (!kept.length) return null
+  kept.sort((a, b) => ringAreaAbs(b?.[0]) - ringAreaAbs(a?.[0]))
+  return {
+    ...feature,
+    geometry: { type: 'Polygon', coordinates: kept[0] },
+  }
 }
 
 function filterAntarcticaFromGeoJson(geojson) {
   if (!geojson?.features?.length) return geojson
   return {
     ...geojson,
-    features: geojson.features.filter((f) => !isStandaloneAntarcticaFeature(f)),
+    features: geojson.features
+      .filter((f) => !isStandaloneAntarcticaFeature(f))
+      .map((f) => clipTierraDelFuegoFeature(f))
+      .filter(Boolean),
   }
 }
 
@@ -153,9 +244,9 @@ function polygonStyle(feature, alpha = 0.42) {
   return {
     fillColor: fill,
     fillOpacity: alpha,
-    color: '#111827',
-    weight: 1.6,
-    opacity: 0.95,
+    color: '#94a3b8',
+    weight: 0.7,
+    opacity: 0.55,
   }
 }
 
@@ -279,8 +370,8 @@ const PROVINCE_LABEL_NUDGE = {
   'rio negro': [-0.55, 0.1],
   'chubut': [0.4, 0.15],
   'santa cruz': [0.7, 0.35],
-  'tierra del fuego antartida e islas del atlantico sur': [2.4, -1.1],
-  'tierra del fuego': [0.35, -0.4],
+  'tierra del fuego antartida e islas del atlantico sur': [0.15, -0.25],
+  'tierra del fuego': [0.15, -0.25],
 }
 
 function featureBoundsSize(feature) {
@@ -363,7 +454,7 @@ function featureLabelLatLng(feature) {
   return null
 }
 
-function PolygonLabelsLayer({ data, level }) {
+function PolygonLabelsLayer({ data, level, minZoomToShow = null }) {
   const map = useMap()
   useEffect(() => {
     if (!data?.features?.length) return
@@ -408,11 +499,24 @@ function PolygonLabelsLayer({ data, level }) {
         /* ignore invalid geometry */
       }
     }
-    map.addLayer(group)
-    return () => {
-      map.removeLayer(group)
+
+    const syncVisibility = () => {
+      if (minZoomToShow == null) {
+        if (!map.hasLayer(group)) map.addLayer(group)
+        return
+      }
+      const show = map.getZoom() >= minZoomToShow
+      if (show && !map.hasLayer(group)) map.addLayer(group)
+      if (!show && map.hasLayer(group)) map.removeLayer(group)
     }
-  }, [map, data, level])
+
+    syncVisibility()
+    map.on('zoomend', syncVisibility)
+    return () => {
+      map.off('zoomend', syncVisibility)
+      if (map.hasLayer(group)) map.removeLayer(group)
+    }
+  }, [map, data, level, minZoomToShow])
   return null
 }
 
@@ -428,80 +532,7 @@ const MAP_TILES = {
   },
 }
 
-function MapZoomLimits({ minZoom, maxZoom }) {
-  const map = useMap()
-  useEffect(() => {
-    map.setMinZoom(minZoom)
-    map.setMaxZoom(maxZoom)
-  }, [map, minZoom, maxZoom])
-  return null
-}
-
-/** Vista fija (sin pan/zoom): país o provincia; solo clic para entrar al siguiente nivel. */
-function MapFixedViewLock({
-  locked,
-  fitData,
-  clampMainland = false,
-  pad = 28,
-  unlockMinZoom = 4,
-  unlockMaxZoom = 14,
-  lockClassName = 'map-locked-view',
-}) {
-  const map = useMap()
-  useEffect(() => {
-    if (!locked) {
-      map.dragging.enable()
-      map.touchZoom.enable()
-      map.doubleClickZoom.enable()
-      map.scrollWheelZoom.enable()
-      map.boxZoom.enable()
-      map.keyboard.enable()
-      map.setMinZoom(unlockMinZoom)
-      map.setMaxZoom(unlockMaxZoom)
-      map.getContainer().classList.remove(lockClassName)
-      return undefined
-    }
-
-    map.dragging.disable()
-    map.touchZoom.disable()
-    map.doubleClickZoom.disable()
-    map.scrollWheelZoom.disable()
-    map.boxZoom.disable()
-    map.keyboard.disable()
-    map.getContainer().classList.add(lockClassName)
-
-    if (fitData?.features?.length) {
-      try {
-        const b = clampMainland
-          ? getMainlandFitBounds(fitData)
-          : L.geoJSON(fitData).getBounds()
-        if (b?.isValid?.()) {
-          map.fitBounds(b, { padding: [pad, pad], animate: false })
-          const z = map.getZoom()
-          map.setMinZoom(z)
-          map.setMaxZoom(z)
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    return () => {
-      map.getContainer().classList.remove(lockClassName)
-      map.dragging.enable()
-      map.touchZoom.enable()
-      map.doubleClickZoom.enable()
-      map.scrollWheelZoom.enable()
-      map.boxZoom.enable()
-      map.keyboard.enable()
-      map.setMinZoom(unlockMinZoom)
-      map.setMaxZoom(unlockMaxZoom)
-    }
-  }, [locked, fitData, clampMainland, pad, map, unlockMinZoom, unlockMaxZoom, lockClassName])
-  return null
-}
-
-/** Cámara acotada a un área (provincia o departamento): zoom/pan libres sin salir. */
+/** Cámara acotada a un área (país, provincia o departamento): zoom/pan libres sin salir. */
 function MapAreaCamera({
   enabled,
   areaGeo,
@@ -509,6 +540,7 @@ function MapAreaCamera({
   fitMaxZoom = 14,
   padFactor = 0.1,
   fitPadding = 44,
+  clampMainland = false,
 }) {
   const map = useMap()
   useEffect(() => {
@@ -528,8 +560,10 @@ function MapAreaCamera({
     map.keyboard.enable()
 
     try {
-      const bounds = L.geoJSON(areaGeo).getBounds()
-      if (!bounds.isValid()) return undefined
+      const bounds = clampMainland
+        ? getMainlandFitBounds(areaGeo)
+        : L.geoJSON(areaGeo).getBounds()
+      if (!bounds?.isValid?.()) return undefined
 
       const limitBounds = bounds.pad(padFactor)
       map.fitBounds(bounds, { padding: [fitPadding, fitPadding], animate: false, maxZoom: fitMaxZoom })
@@ -553,7 +587,7 @@ function MapAreaCamera({
       map.setMinZoom(4)
       map.setMaxZoom(maxZoom)
     }
-  }, [enabled, areaGeo, maxZoom, fitMaxZoom, padFactor, fitPadding, map])
+  }, [enabled, areaGeo, maxZoom, fitMaxZoom, padFactor, fitPadding, clampMainland, map])
   return null
 }
 
@@ -1252,16 +1286,18 @@ function App() {
   }, [mapLevel, provincesGeoData, departmentsGeoData, localitiesGeoData, selectedDeptPolygon, selectedCountry])
 
   const boundsMaxZoom = mapLevel === 'country' ? 6 : mapLevel === 'province' ? 9 : 14
-  const mapMaxZoom = mapLevel === 'department' ? 18 : mapLevel === 'province' ? 12 : 14
+  const mapMaxZoom = mapLevel === 'department' ? 18 : mapLevel === 'province' ? 12 : 9
   const mapTile = mapLevel === 'department' ? MAP_TILES.department : MAP_TILES.default
-  const mapViewLocked = mapLevel === 'country'
-  const mapInteractionsEnabled = mapLevel === 'province' || mapLevel === 'department'
-  const lockedFitData = mapLevel === 'country' ? provincesGeoData : null
+  const mapInteractionsEnabled = true
   const areaCameraGeo = mapLevel === 'department'
     ? selectedDeptPolygon
     : mapLevel === 'province'
       ? (selectedProvincePolygon || departmentsGeoData)
-      : null
+      : provincesGeoData
+  const areaCameraFitMaxZoom = mapLevel === 'department' ? 14 : mapLevel === 'province' ? 9 : 6
+  const areaCameraPad = mapLevel === 'department' ? 0.1 : mapLevel === 'province' ? 0.06 : 0.04
+  const areaCameraFitPadding = mapLevel === 'department' ? 44 : mapLevel === 'province' ? 36 : 28
+  const areaCameraClampMainland = mapLevel === 'country'
 
   const isSearching = debouncedSearch.trim().length > 0
 
@@ -1450,8 +1486,8 @@ function App() {
       setSelectedProvince('')
       return
     }
-    if (!selectedProvince) {
-      setSelectedProvince(provinceOptions[0].name)
+    if (selectedProvince && !provinceOptions.some((p) => p.name === selectedProvince)) {
+      setSelectedProvince('')
     }
   }, [provinceOptions, selectedProvince])
 
@@ -2222,17 +2258,13 @@ function App() {
   }
 
   return (
-    <main className="layout">
-      <header className="app-header">
-        <img src="/wayturismo-logo.png" alt="WayTurismo" className="app-logo" width={220} height={88} />
-        <p className="app-tagline">Mapa fácil para explorar lugares, filtrar por tipo y armar tu recorrido paso a paso.</p>
-      </header>
-
+    <main className={`layout${currentUser ? ' layout--app' : ' layout--auth'}`}>
       {!currentUser ? (
         <section className="auth-shell">
           <aside className="auth-visual panel">
-            <img src="/wayturismo-logo.png" alt="WayTurismo" className="auth-logo" width={200} height={80} />
-            <h2>{authMode === 'register' ? 'SIGN UP' : 'LOGIN'}</h2>
+            <img src="/wayturismo-logo.png" alt="WayTurismo" className="auth-logo" width={220} height={88} />
+            <p className="auth-brand-line">Tu camino, tu destino</p>
+            <h2>{authMode === 'register' ? 'Crear cuenta' : 'Iniciar sesión'}</h2>
             <p>{authMode === 'register' ? 'Crea tu cuenta para guardar favoritos y planificar recorridos.' : 'Inicia sesion para continuar con tu experiencia turistica.'}</p>
             <ul>
               <li>Mapa interactivo por niveles</li>
@@ -2243,7 +2275,7 @@ function App() {
 
           <div className="panel auth-panel">
             <div className="auth-header">
-              <h2>{authMode === 'register' ? 'Crear cuenta' : 'Bienvenido de nuevo'}</h2>
+              <h2>{authMode === 'register' ? 'Registrate' : 'Bienvenido de nuevo'}</h2>
               <p>{authMode === 'register' ? 'Registrate en menos de un minuto.' : 'Ingresa tus credenciales para continuar.'}</p>
             </div>
             <div className="tabs auth-tabs">
@@ -2297,6 +2329,10 @@ function App() {
       ) : (
         <section className="app-grid">
           <aside className="panel controls sidebar">
+            <div className="sidebar-brand">
+              <img src="/wayturismo-logo.png" alt="WayTurismo" className="sidebar-logo" width={240} height={96} />
+              <p className="sidebar-brand-tag">Tu camino, tu destino</p>
+            </div>
             <div className="sidebar-user-bar">
               <div className="sidebar-user-avatar" aria-hidden>{currentUser.name.charAt(0).toUpperCase()}</div>
               <div className="sidebar-user-meta">
@@ -2319,8 +2355,8 @@ function App() {
             </div>
 
             <div className="app-quick-guide" role="region" aria-label="Guía rápida">
-              <p><span className="guide-step">1</span> Buscá o elegí provincia</p>
-              <p><span className="guide-step">2</span> Tocá un tipo de lugar</p>
+              <p><span className="guide-step">1</span> Elige provincia</p>
+              <p><span className="guide-step">2</span> Selecciona departamento</p>
               <p><span className="guide-step">3</span> Armá tu recorrido en el mapa</p>
             </div>
 
@@ -2452,11 +2488,13 @@ function App() {
                 value={selectedProvince}
                 onChange={(e) => {
                   releaseMapFocusForNavigation()
-                  setSelectedProvince(e.target.value)
+                  const value = e.target.value
+                  setSelectedProvince(value)
                   setSelectedDepartment('')
-                  setMapLevel('province')
+                  setMapLevel(value ? 'province' : 'country')
                 }}
               >
+                <option value="">Elegí una provincia</option>
                 {provinceOptions.map((province) => <option key={province.name} value={province.name}>{province.name}</option>)}
               </select>
             </label>
@@ -2923,6 +2961,7 @@ function App() {
                   onClick={() => {
                     releaseMapFocusForNavigation()
                     setSelectedDepartment('')
+                    setSelectedProvince('')
                     setMapLevel('country')
                   }}
                 >
@@ -2976,7 +3015,7 @@ function App() {
             ) : null}
               {mapLevel === 'country' ? (
                 <p className="map-country-lock-hint" role="status">
-                  Mapa de Argentina fijo: hacé clic en una provincia para entrar.
+                  Cámara limitada a Argentina: podés hacer zoom y moverte. Los nombres aparecen al acercarte; clic en una provincia para entrar.
                 </p>
               ) : null}
               {mapLevel === 'province' ? (
@@ -2990,7 +3029,12 @@ function App() {
                 </p>
               ) : null}
             <MapContainer
-              className={`${adminPlacePickMode ? 'map-container--admin-pick' : ''}${mapViewLocked ? ' map-container--country-locked' : ''}`.trim() || undefined}
+              className={[
+                adminPlacePickMode ? 'map-container--admin-pick' : '',
+                'map-leaflet',
+              ]
+                .filter(Boolean)
+                .join(' ')}
               center={DEFAULT_CENTER}
               zoom={DEFAULT_ZOOM}
               scrollWheelZoom={mapInteractionsEnabled}
@@ -3003,26 +3047,16 @@ function App() {
               maxBoundsViscosity={1}
               minZoom={4}
               maxZoom={18}
-              style={{ height: '600px', width: '100%' }}
             >
-              <MapFixedViewLock
-                locked={mapViewLocked}
-                fitData={lockedFitData}
-                clampMainland
-                pad={28}
-                unlockMinZoom={4}
-                unlockMaxZoom={mapMaxZoom}
+              <MapAreaCamera
+                enabled={Boolean(areaCameraGeo?.features?.length)}
+                areaGeo={areaCameraGeo}
+                maxZoom={mapMaxZoom}
+                fitMaxZoom={areaCameraFitMaxZoom}
+                padFactor={areaCameraPad}
+                fitPadding={areaCameraFitPadding}
+                clampMainland={areaCameraClampMainland}
               />
-              {(mapLevel === 'province' || mapLevel === 'department') ? (
-                <MapAreaCamera
-                  enabled
-                  areaGeo={areaCameraGeo}
-                  maxZoom={mapMaxZoom}
-                  fitMaxZoom={mapLevel === 'province' ? 9 : 14}
-                  padFactor={mapLevel === 'province' ? 0.06 : 0.1}
-                  fitPadding={mapLevel === 'province' ? 36 : 44}
-                />
-              ) : null}
               {currentUser?.role === 'admin' ? (
                 <AdminMapClickHandler
                   enabledRef={adminPlacePickModeRef}
@@ -3032,7 +3066,7 @@ function App() {
                 />
               ) : null}
               <TileLayer key={mapTile.url} attribution={mapTile.attribution} url={mapTile.url} />
-              {mapViewLocked ? null : (mapLevel === 'province' || mapLevel === 'department') ? (
+              {(mapLevel === 'country' || mapLevel === 'province' || mapLevel === 'department') ? (
                 mapFocus ? <FlyToPoint point={mapFocus} /> : null
               ) : mapFocus ? (
                 <FlyToPoint point={mapFocus} />
@@ -3042,13 +3076,13 @@ function App() {
                 <FitBoundsGeoJson data={boundsData} maxZoom={boundsMaxZoom} clampMainland={false} />
               )}
               {selectedAreaData?.geojson && !(mapLevel === 'country' && provincesGeoData?.features?.length) ? (
-                <GeoJSON data={selectedAreaData.geojson} style={{ color: '#2563eb', weight: 2, fillOpacity: 0.08 }} />
+                <GeoJSON data={selectedAreaData.geojson} style={{ color: '#94a3b8', weight: 1, opacity: 0.5, fillOpacity: 0.06 }} />
               ) : null}
               {mapLevel === 'country' && provincesGeoData?.features?.length ? (
                 <GeoJSON
                   key="layer-provincias"
                   data={provincesGeoData}
-                  style={(feature) => polygonStyle(feature, 0.56)}
+                  style={(feature) => polygonStyle(feature, 0.42)}
                   onEachFeature={(feature, layer) => {
                     const name = feature.properties?.nombre ?? ''
                     layer.on({
@@ -3070,7 +3104,12 @@ function App() {
                 />
               ) : null}
               {mapLevel === 'country' && provincesGeoData?.features?.length ? (
-                <PolygonLabelsLayer key="labels-provincias" data={provincesGeoData} level="province" />
+                <PolygonLabelsLayer
+                  key="labels-provincias"
+                  data={provincesGeoData}
+                  level="province"
+                  minZoomToShow={6.35}
+                />
               ) : null}
               {(mapLevel === 'province' || mapLevel === 'department') && departmentsGeoData?.features?.length ? (
                 <GeoJSON
@@ -3079,12 +3118,12 @@ function App() {
                   style={(feature) => {
                     const name = feature.properties?.nombre ?? ''
                     if (mapLevel === 'department' && selectedDepartment && name === selectedDepartment) {
-                      return { ...polygonStyle(feature, 0.52), weight: 2.5, color: '#334155', fillOpacity: 0.12 }
+                      return { ...polygonStyle(feature, 0.28), weight: 1.2, color: '#64748b', opacity: 0.65, fillOpacity: 0.08 }
                     }
                     if (mapLevel === 'department') {
-                      return { ...polygonStyle(feature, 0.24), weight: 1, color: '#64748b', fillOpacity: 0.06 }
+                      return { ...polygonStyle(feature, 0.12), weight: 0.5, color: '#94a3b8', opacity: 0.4, fillOpacity: 0.04 }
                     }
-                    return polygonStyle(feature, 0.54)
+                    return polygonStyle(feature, 0.38)
                   }}
                   onEachFeature={(feature, layer) => {
                     const name = feature.properties?.nombre ?? ''

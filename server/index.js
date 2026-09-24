@@ -15,7 +15,7 @@ import { all, get, run } from './db.js'
 import { famousPlaces, quickSearchGroups } from './famousPlaces.js'
 import { mendozaPlaces, mendozaQuickSearchGroups } from './mendozaPlaces.js'
 import { argentinaPlaces, argentinaQuickSearchGroups } from './argentinaPlaces.js'
-import { filterAntarcticaFromGeoJson } from './geoFilter.js'
+import { filterAntarcticaFromGeoJson, filterTierraDelFuegoDepartmentsGeoJson, isExcludedTierraDelFuegoAreaName } from './geoFilter.js'
 import { filterPlacesByDepartment, filterPlacesByProvince } from './geoNormalize.js'
 import { geoAreas, places as seedPlaces } from './seedData.js'
 
@@ -265,14 +265,17 @@ app.get('/api/locations/departments', async (req, res) => {
     return
   }
   const data = await response.json()
-  const departments = (data.departamentos || [])
+  let departments = (data.departamentos || [])
     .map((d) => ({
       name: d.nombre,
       lat: d.centroide?.lat ?? null,
       lng: d.centroide?.lon ?? null,
     }))
     .filter((d) => d.lat != null && d.lng != null)
-    .sort((a, b) => a.name.localeCompare(b.name))
+  if (/tierra del fuego/i.test(province)) {
+    departments = departments.filter((d) => !isExcludedTierraDelFuegoAreaName(d.name))
+  }
+  departments.sort((a, b) => a.name.localeCompare(b.name))
   res.json(departments)
 })
 
@@ -323,9 +326,12 @@ app.get('/api/geo/departamentos', async (req, res) => {
       geoCache.departamentos.ts = now
     }
     const all = geoCache.departamentos.data
-    const filtered = {
+    let filtered = {
       type: 'FeatureCollection',
       features: (all.features || []).filter((f) => f.properties?.provincia?.id === provinciaId),
+    }
+    if (/tierra del fuego/i.test(provinciaNombre)) {
+      filtered = filterTierraDelFuegoDepartmentsGeoJson(filtered)
     }
     res.json(filtered)
   } catch {

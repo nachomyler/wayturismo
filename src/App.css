@@ -39,8 +39,27 @@ body {
   padding: 16px 20px 24px;
 }
 
-header h1 {
-  margin: 0 0 8px;
+.layout--app {
+  padding-top: 12px;
+}
+
+.layout--app .app-grid {
+  margin-top: 0;
+}
+
+.layout--app .panel {
+  margin-top: 0;
+}
+
+.layout--auth {
+  min-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.layout--auth .auth-shell {
+  margin-top: 0;
 }
 
 .app-header {
@@ -64,10 +83,19 @@ header h1 {
 
 .auth-logo {
   display: block;
-  width: min(200px, 100%);
+  width: min(220px, 88%);
   height: auto;
-  margin: 0 auto 12px;
+  margin: 0 0 10px;
   object-fit: contain;
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.18));
+}
+
+.auth-brand-line {
+  margin: 0 0 18px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #e0f2fe;
+  letter-spacing: 0.01em;
 }
 
 .panel {
@@ -93,7 +121,7 @@ header h1 {
 }
 
 .auth-visual {
-  background: linear-gradient(160deg, #1e3a8a, #2563eb 60%, #3b82f6);
+  background: linear-gradient(160deg, #115e59 0%, #0f766e 45%, #0d9488 100%);
   color: #e2e8f0;
   border: none;
   display: grid;
@@ -278,6 +306,7 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(340px, 400px) minmax(0, 1fr);
   gap: 16px;
+  align-items: start;
 }
 
 .controls {
@@ -290,19 +319,53 @@ button:disabled {
 .sidebar {
   display: flex;
   flex-direction: column;
+  gap: 0;
   padding: 0;
-  overflow: hidden;
-  max-height: calc(100vh - 100px);
+  overflow: visible;
+  max-height: none;
+}
+
+.sidebar-brand {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 8px;
+  padding: 14px 12px 12px;
+  background:
+    linear-gradient(160deg, #0f766e 0%, #0d9488 55%, #14b8a6 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+  flex-shrink: 0;
+}
+
+.sidebar-logo {
+  display: block;
+  width: min(240px, 96%);
+  height: auto;
+  object-fit: contain;
+  border-radius: 12px;
+  background: #fff;
+  padding: 6px 8px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.16);
+}
+
+.sidebar-brand-tag {
+  margin: 0;
+  max-width: 16rem;
+  font-size: 0.88rem;
+  font-weight: 650;
+  color: #ecfeff;
+  line-height: 1.35;
 }
 
 .sidebar-user-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: 10px;
+  padding: 10px 14px;
   border-bottom: 2px solid var(--wt-border);
-  background: linear-gradient(180deg, var(--wt-primary-soft) 0%, #fff 100%);
+  background: #fff;
   flex-shrink: 0;
+  min-width: 0;
 }
 
 .sidebar-user-avatar {
@@ -318,9 +381,18 @@ button:disabled {
   flex-shrink: 0;
 }
 
+.sidebar-user-meta {
+  flex: 1;
+  min-width: 0;
+}
+
 .sidebar-user-meta strong {
   font-size: 1rem;
   color: var(--wt-text);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-user-meta span {
@@ -337,6 +409,7 @@ button:disabled {
   color: var(--wt-text-soft);
   border: 2px solid var(--wt-border);
   font-weight: 700;
+  flex-shrink: 0;
 }
 
 .app-quick-guide {
@@ -346,6 +419,7 @@ button:disabled {
   border-bottom: 2px solid #fde68a;
   display: grid;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .app-quick-guide p {
@@ -372,12 +446,11 @@ button:disabled {
 }
 
 .sidebar-scroll {
-  flex: 1;
-  overflow-y: auto;
   padding: 14px 16px 18px;
   display: grid;
-  gap: 12px;
+  gap: 14px;
   align-content: start;
+  overflow: visible;
 }
 
 .sidebar-section-title {
@@ -992,6 +1065,30 @@ button:disabled {
 
 .map-panel {
   padding: 10px;
+  min-width: 0;
+  position: sticky;
+  top: 12px;
+  align-self: start;
+}
+
+.map-leaflet {
+  width: 100%;
+  height: 720px;
+  border-radius: 12px;
+  overflow: hidden;
+  font-family: var(--wt-font);
+}
+
+/* Leaflet fuerza Helvetica/Arial: unificar con Nunito de la interfaz */
+.map-panel .leaflet-container,
+.map-panel .leaflet-tooltip,
+.map-panel .leaflet-popup-content,
+.map-panel .leaflet-control,
+.geo-label,
+.geo-label-marker,
+.locality-tooltip,
+.street-tooltip {
+  font-family: var(--wt-font);
 }
 
 /* Marcadores y popups por encima de polígonos GeoJSON al explorar departamentos */
@@ -1089,6 +1186,7 @@ button:disabled {
   border: none;
   box-shadow: none;
   color: #0f172a;
+  font-family: var(--wt-font);
   font-weight: 700;
   text-shadow:
     -1px -1px 0 #ffffff,
@@ -1188,6 +1286,7 @@ button:disabled {
 
 .locality-tooltip,
 .street-tooltip {
+  font-family: var(--wt-font);
   font-size: 12px;
   font-weight: 600;
   color: #0f172a;
@@ -1746,8 +1845,12 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .sidebar {
-    max-height: none;
+  .map-panel {
+    position: static;
+  }
+
+  .map-leaflet {
+    height: min(640px, 75vh);
   }
 
   .auth-shell {

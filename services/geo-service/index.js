@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { filterAntarcticaFromGeoJson } from '../../server/geoFilter.js'
+import { filterAntarcticaFromGeoJson, filterTierraDelFuegoDepartmentsGeoJson, isExcludedTierraDelFuegoAreaName } from '../../server/geoFilter.js'
 import { createServiceApp, startService } from '../shared/http.js'
 
 const PORT = Number(process.env.GEO_SERVICE_PORT || 4003)
@@ -49,14 +49,17 @@ app.get('/locations/departments', async (req, res) => {
     return
   }
   const data = await response.json()
-  const departments = (data.departamentos || [])
+  let departments = (data.departamentos || [])
     .map((d) => ({
       name: d.nombre,
       lat: d.centroide?.lat ?? null,
       lng: d.centroide?.lon ?? null,
     }))
     .filter((d) => d.lat != null && d.lng != null)
-    .sort((a, b) => a.name.localeCompare(b.name))
+  if (/tierra del fuego/i.test(province)) {
+    departments = departments.filter((d) => !isExcludedTierraDelFuegoAreaName(d.name))
+  }
+  departments.sort((a, b) => a.name.localeCompare(b.name))
   res.json(departments)
 })
 
@@ -107,9 +110,12 @@ app.get('/geo/departamentos', async (req, res) => {
       geoCache.departamentos.ts = now
     }
     const allGeo = geoCache.departamentos.data
-    const filtered = {
+    let filtered = {
       type: 'FeatureCollection',
       features: (allGeo.features || []).filter((f) => f.properties?.provincia?.id === provinciaId),
+    }
+    if (/tierra del fuego/i.test(provinciaNombre)) {
+      filtered = filterTierraDelFuegoDepartmentsGeoJson(filtered)
     }
     res.json(filtered)
   } catch {
